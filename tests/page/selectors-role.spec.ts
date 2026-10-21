@@ -433,7 +433,9 @@ test('SE-059 should filter hidden, unless explicitly asked for', async ({ page }
   ]);
 });
 
-test('SE-060 should support name', async ({ page }) => {
+test('SE-060 should support name', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/43549' },
+}, async ({ page }) => {
   await page.setContent(`
     <div role="button" aria-label=" Hello "></div>
     <div role="button" aria-label="Hallo"></div>
@@ -495,6 +497,18 @@ test('SE-060 should support name', async ({ page }) => {
   expect(await page.getByRole('button', { name: '123', includeHidden: true }).evaluateAll(els => els.map(e => e.outerHTML))).toEqual([
     `<div role="button" aria-label="123" aria-hidden="true"></div>`,
   ]);
+
+  await page.setContent('<span id="title">Chosen name</span><div role="group" aria-labelledby="title"></div>');
+  const group = page.getByRole('group');
+  await expect(group).toHaveAccessibleName('Chosen name');
+
+  await group.evaluate(element => {
+    element.ariaLabelledByElements = [document.querySelector('#title')!];
+  });
+
+  expect(await group.getAttribute('aria-labelledby')).toBe('');
+  expect.soft(await group.ariaSnapshot()).toBe('- group "Chosen name"');
+  expect(await page.getByRole('group', { name: 'Chosen name', exact: true }).count()).toBe(1);
 });
 
 test('SE-061 should support option name with html whitespace', async ({ page }) => {

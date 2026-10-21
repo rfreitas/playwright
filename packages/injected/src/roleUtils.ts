@@ -567,8 +567,10 @@ function parseCSSContentPropertyAsString(element: Element, content: string, isPs
 
 export function getAriaLabelledByElements(element: Element): Element[] | null {
   const ref = element.getAttribute('aria-labelledby');
-  if (ref === null)
-    return null;
+  if (!ref) {
+    const refs = element.ariaLabelledByElements;
+    return refs?.length ? [...refs] : null;
+  }
   const refs = getIdRefs(element, ref);
   // step 2b:
   // "if the current node has an aria-labelledby attribute that contains at least one valid IDREF"
