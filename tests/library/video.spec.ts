@@ -14,9 +14,12 @@
  * limitations under the License.
  */
 
+import childProcess from 'child_process';
 import fs from 'fs';
+import { mock } from 'node:test';
 import path from 'path';
 import { jpegjs } from 'playwright-core/lib/utilsBundle';
+import { registry } from '../../packages/playwright-core/lib/coreBundle';
 import { expect, browserTest as it } from '../config/browserTest';
 import { ensureSomeFrames, parseTraceRaw } from '../config/utils';
 import { VideoPlayer } from './videoPlayer';
@@ -110,7 +113,9 @@ it.describe('screencast', () => {
     await browser.newContext({ recordVideo: {} });
   });
 
-  it('VI-003 should capture static page', async ({ browser, browserName, trace, headless, isWindows }, testInfo) => {
+  it('VI-003 should capture static page', {
+    annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/43515' }
+  }, async ({ browser, browserName, trace, headless, isWindows }, testInfo) => {
     // Firefox does not have a mobile variant and has a large minimum size (500 on windows and 450 elsewhere).
     const size = browserName === 'firefox' ? { width: 500, height: 400 } : { width: 320, height: 240 };
     const context = await browser.newContext({
@@ -120,14 +125,25 @@ it.describe('screencast', () => {
       },
       viewport: size,
     });
-    const page = await context.newPage();
+    const spawn = mock.method(childProcess, 'spawn');
+    try {
+      const page = await context.newPage();
 
-    await page.evaluate(() => document.body.style.backgroundColor = 'red');
-    await ensureSomeFrames(page);
-    await context.close();
+      await page.evaluate(() => document.body.style.backgroundColor = 'red');
+      await ensureSomeFrames(page);
+      await context.close();
 
-    const videoFile = await page.video().path();
-    expectRedFrames(videoFile, size);
+      const videoFile = await page.video().path();
+      expectRedFrames(videoFile, size);
+
+      const ffmpeg = registry.registry.findExecutable('ffmpeg')!.executablePathOrDie('javascript');
+      const ffmpegCalls = spawn.mock.calls.filter(call => call.arguments[0] === ffmpeg);
+      expect(ffmpegCalls.map(call => call.arguments[2])).toEqual([
+        expect.objectContaining({ windowsHide: true }),
+      ]);
+    } finally {
+      spawn.mock.restore();
+    }
   });
 
   it('VI-004 should pad a short frame to the video size', async ({ browser }, testInfo) => {
