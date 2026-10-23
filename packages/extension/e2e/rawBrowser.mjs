@@ -39,6 +39,24 @@ async function freePort() {
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+// One CDP command over its own connection to a target or to the browser.
+async function send(wsUrl, method, params) {
+  const ws = new WebSocket(wsUrl);
+  await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
+  try {
+    const response = await new Promise((resolve, reject) => {
+      ws.once('message', data => resolve(JSON.parse(data.toString())));
+      ws.once('error', reject);
+      ws.send(JSON.stringify({ id: 1, method, params }));
+    });
+    if (response.error)
+      throw new Error(`${method}: ${JSON.stringify(response.error)}`);
+    return response.result;
+  } finally {
+    ws.close();
+  }
+}
+
 export async function launchRawBrowserWithExtension() {
   assert.ok(fs.existsSync(path.join(distDir, 'manifest.json')), `Build the extension first: ${distDir} is missing`);
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pw-ext-raw-'));
@@ -56,6 +74,11 @@ export async function launchRawBrowserWithExtension() {
   const http = async (pathname, method = 'GET') => {
     const response = await fetch(`http://127.0.0.1:${port}${pathname}`, { method });
     return await response.json();
+  };
+
+  const browserSend = async (method, params) => {
+    const { webSocketDebuggerUrl } = await http('/json/version');
+    return await send(webSocketDebuggerUrl, method, params);
   };
 
   const close = async () => {
@@ -91,20 +114,19 @@ export async function launchRawBrowserWithExtension() {
       return (await http('/json/list')).filter(target => target.type === 'page');
     },
     async evaluate(target, expression) {
-      const ws = new WebSocket(target.webSocketDebuggerUrl);
-      await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
-      try {
-        const result = await new Promise((resolve, reject) => {
-          ws.once('message', data => resolve(JSON.parse(data.toString())));
-          ws.once('error', reject);
-          ws.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression, returnByValue: true, awaitPromise: true } }));
-        });
-        if (result.error || result.result?.exceptionDetails)
-          throw new Error(JSON.stringify(result.error ?? result.result.exceptionDetails));
-        return result.result.result.value;
-      } finally {
-        ws.close();
-      }
+      const result = await send(target.webSocketDebuggerUrl, 'Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+      if (result.exceptionDetails)
+        throw new Error(JSON.stringify(result.exceptionDetails));
+      return result.result.value;
+    },
+    // The state of the browser window that holds the tab: 'normal', 'minimized', ...
+    async windowState(target) {
+      const { windowId } = await browserSend('Browser.getWindowForTarget', { targetId: target.id });
+      return (await browserSend('Browser.getWindowBounds', { windowId })).bounds.windowState;
+    },
+    async setWindowState(target, windowState) {
+      const { windowId } = await browserSend('Browser.getWindowForTarget', { targetId: target.id });
+      await browserSend('Browser.setWindowBounds', { windowId, bounds: { windowState } });
     },
     // The target for a tab, found again by its id: /json/list reflects navigations.
     async targetById(id) {

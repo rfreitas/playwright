@@ -127,30 +127,80 @@ async function siteTarget() {
   return target;
 }
 
-describe('a controlled tab that is not the active tab of its window', () => {
-  test('is brought forward so the page can finish its work', { timeout: 150_000 }, async () => {
-    const navigate = await callToolConnecting('browser_navigate', { url: siteUrl });
-    assert.equal(navigate.isError, false, navigate.text);
+let connected = false;
 
-    // Precondition: the controlled tab is visible, then another tab covers it.
-    const controlled = await siteTarget();
+// Loads the site in the controlled tab, connecting the extension on first use.
+async function openSite() {
+  const navigate = connected
+    ? await callTool('browser_navigate', { url: siteUrl })
+    : await callToolConnecting('browser_navigate', { url: siteUrl });
+  connected = true;
+  assert.equal(navigate.isError, false, navigate.text);
+  return await siteTarget();
+}
+
+async function waitForStatus(target, expected) {
+  let status;
+  for (let i = 0; i < 20 && status !== expected; i++) {
+    status = await browser.evaluate(target, `document.getElementById('status').textContent`);
+    if (status !== expected)
+      await sleep(250);
+  }
+  return status;
+}
+
+// What the agent does must not change what the user sees: the tab they are on
+// stays the active tab, and a minimized window stays minimized.
+describe('a controlled tab that is hidden', () => {
+  test('behind another tab, a click finishes and the user keeps their tab', { timeout: 150_000 }, async () => {
+    const controlled = await openSite();
     assert.equal(await browser.evaluate(controlled, 'document.visibilityState'), 'visible');
     const cover = await browser.newTab('about:blank');
     await sleep(500);
-    assert.equal(await browser.evaluate(controlled, 'document.visibilityState'), 'hidden', 'the cover tab did not hide the controlled tab; the test setup is wrong');
 
     const click = await callTool('browser_click', { element: 'Go button', target: '#go' });
-
-    let status;
-    for (let i = 0; i < 20 && status !== 'done'; i++) {
-      status = await browser.evaluate(controlled, `document.getElementById('status').textContent`);
-      if (status !== 'done')
-        await sleep(250);
-    }
-    const visibility = await browser.evaluate(controlled, 'document.visibilityState');
+    const status = await waitForStatus(controlled, 'done');
+    const coverVisibility = await browser.evaluate(cover, 'document.visibilityState').catch(() => 'gone');
     await browser.closeTab(cover).catch(() => {});
 
-    assert.equal(status, 'done', `the page never finished: status "${status}", visibilityState "${visibility}", browser_click ${click.isError ? 'failed' : 'returned'}:\n${click.text}`);
+    assert.equal(status, 'done', `the page never finished; browser_click ${click.isError ? 'failed' : 'returned'}:\n${click.text}`);
     assert.equal(click.isError, false, click.text);
+    assert.equal(coverVisibility, 'visible', 'the controlled tab was brought to the front over the tab the user was on');
+  });
+
+  test('behind another tab, a screenshot is taken without switching tabs', { timeout: 150_000 }, async () => {
+    const controlled = await openSite();
+    const cover = await browser.newTab('about:blank');
+    await sleep(500);
+
+    const started = Date.now();
+    const result = await client.callTool({ name: 'browser_take_screenshot', arguments: { type: 'png' } }, undefined, { timeout: 60_000 });
+    const elapsed = Date.now() - started;
+    const coverVisibility = await browser.evaluate(cover, 'document.visibilityState').catch(() => 'gone');
+    await browser.closeTab(cover).catch(() => {});
+
+    const text = result.content.filter(c => c.type === 'text').map(c => c.text).join('\n');
+    assert.ok(!result.isError, `the screenshot failed after ${elapsed}ms:\n${text}`);
+    assert.equal(coverVisibility, 'visible', 'the controlled tab was brought to the front over the tab the user was on');
+    assert.ok(controlled);
+  });
+
+  test('in a minimized window, a click finishes and the window stays minimized', { timeout: 150_000 }, async () => {
+    const controlled = await openSite();
+    await browser.setWindowState(controlled, 'minimized');
+    try {
+      await sleep(500);
+      assert.equal(await browser.windowState(controlled), 'minimized', 'the window did not minimize; the test setup is wrong');
+
+      const click = await callTool('browser_click', { element: 'Go button', target: '#go' });
+      const status = await waitForStatus(controlled, 'done');
+      const windowState = await browser.windowState(controlled);
+
+      assert.equal(status, 'done', `the page never finished; browser_click ${click.isError ? 'failed' : 'returned'}:\n${click.text}`);
+      assert.equal(click.isError, false, click.text);
+      assert.equal(windowState, 'minimized', 'the window was restored');
+    } finally {
+      await browser.setWindowState(controlled, 'normal').catch(() => {});
+    }
   });
 });
