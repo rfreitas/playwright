@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { recordDiagnostic } from './diagnostics';
 import { RelayConnection, debugLog } from './relayConnection';
 
 const PLAYWRIGHT_GROUP_TITLE = 'Playwright';
@@ -89,6 +90,7 @@ export class ConnectedTabGroup {
     this._connection.onclose = () => this._onConnectionClose();
     this._connection.ontabattached = (tabId: number) => this._onTabAttached(tabId);
     this._connection.ontabdetached = (tabId: number) => this._onTabDetached(tabId);
+    this._connection.ontablost = () => this._recoverGroupTabs();
     this._onTabUpdatedListener = this._onTabUpdated.bind(this);
     this._onTabRemovedListener = this._onTabRemoved.bind(this);
     chrome.tabs.onUpdated.addListener(this._onTabUpdatedListener);
@@ -161,6 +163,34 @@ export class ConnectedTabGroup {
   private _onTabAttached(tabId: number): void {
     void this._updateBadge(tabId, CONNECTED_BADGE);
     void this._addTabToGroup(tabId);
+    // A discarded tab is replaced under a new id and the debugger detaches, so
+    // keep Chrome from discarding it (Memory Saver) while we control it.
+    void chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
+  }
+
+  // Chrome replaces a discarded tab with a new id in the same tab group, which
+  // the debugger cannot follow. Find group tabs that are not attached, wake
+  // discarded ones and attach them. Returns true if any tab was handed back.
+  private async _recoverGroupTabs(): Promise<boolean> {
+    if (this._groupId === null)
+      return false;
+    const tabs = await chrome.tabs.query({ groupId: this._groupId });
+    let recovered = false;
+    for (const tab of tabs) {
+      const tabId = tab.id;
+      if (tabId === undefined || this._connection.attachedTabs.has(tabId) || isNonDebuggableUrl(tab.url) || this._isTabReserved(tabId))
+        continue;
+      recordDiagnostic('group.recoverTab', { tabId, discarded: tab.discarded, url: tab.url?.replace(/[?#].*/, '') });
+      this._groupTabIds.add(tabId);
+      let target = tab;
+      if (tab.discarded) {
+        await chrome.tabs.reload(tabId);
+        target = await chrome.tabs.get(tabId);
+      }
+      this._connection.attachTab(target);
+      recovered = true;
+    }
+    return recovered;
   }
 
   // The debugger detached (drag-out, tab close, or external action). Clear the

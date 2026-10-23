@@ -79,6 +79,10 @@ export class RelayConnection {
   onclose?: () => void;
   ontabattached?: (tabId: number) => void;
   ontabdetached?: (tabId: number) => void;
+  // Called when a detached tab no longer exists, e.g. Chrome swapped it for a
+  // discarded copy under a new id. Resolves true if a replacement was found and
+  // is being attached.
+  ontablost?: (tabId: number) => Promise<boolean>;
 
   get attachedTabs(): ReadonlySet<number> {
     return this._attachedTabs;
@@ -230,7 +234,13 @@ export class RelayConnection {
       tab = await chrome.tabs.get(tabId);
     } catch {
       recordDiagnostic('reattach.tabGone', { tabId });
+      const recovered = await this.ontablost?.(tabId).catch(() => false);
       this._pendingReattach.delete(tabId);
+      if (recovered && !this._closed) {
+        // Keep the connection while the replacement attaches; give up only if it never does.
+        setTimeout(() => this._checkLastTabDetached(), REATTACH_VERIFY_MS);
+        return;
+      }
       this._checkLastTabDetached();
       return;
     }
