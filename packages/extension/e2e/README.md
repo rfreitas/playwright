@@ -39,7 +39,7 @@ node --test packages/extension/e2e/upload.e2e.mjs
 node --test packages/extension/e2e/*.e2e.mjs
 ```
 
-(`node --test` takes file paths, not a directory.)
+(`node --test` takes file paths, not a directory. Add `--test-force-exit` to `focus.e2e.mjs`: the process does not exit on its own after it.)
 
 ## What each file covers
 
@@ -49,6 +49,7 @@ node --test packages/extension/e2e/*.e2e.mjs
 | `upload.e2e.mjs` | `browser_file_upload` without "Allow access to file URLs". |
 | `upload-large.e2e.mjs` | Files over 50 MB, with and without that setting. Writes a 60 MB temp file. |
 | `background-tab.e2e.mjs` | A tab behind another tab, and a minimized window: actions finish and nothing is brought forward. |
+| `focus.e2e.mjs` | The user's tab stays in front, with a connection already open and while connecting for the first time or reconnecting. Connecting is red until the extension puts the user's tab back. |
 | `reconnect.e2e.mjs` | Reconnecting after a lost connection, and retries that fail leaving no pile of connect pages. |
 
 ## Browsers
