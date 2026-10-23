@@ -57,7 +57,16 @@ async function send(wsUrl, method, params) {
   }
 }
 
-export async function launchRawBrowserWithExtension() {
+// How the browser is kept out of the way of whoever runs the tests.
+const MODE_ARGS = {
+  headless: ['--headless=new'],
+  offscreen: ['--window-position=-32000,-32000', '--window-size=900,700'],
+  minimized: ['--start-minimized'],
+  headed: [],
+};
+
+export async function launchRawBrowserWithExtension({ mode = process.env.PW_E2E_BROWSER_MODE ?? 'headless' } = {}) {
+  assert.ok(MODE_ARGS[mode], `unknown browser mode "${mode}", expected one of ${Object.keys(MODE_ARGS).join(', ')}`);
   assert.ok(fs.existsSync(path.join(distDir, 'manifest.json')), `Build the extension first: ${distDir} is missing`);
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pw-ext-raw-'));
   const port = await freePort();
@@ -68,6 +77,7 @@ export async function launchRawBrowserWithExtension() {
     `--load-extension=${distDir}`,
     '--no-first-run',
     '--no-default-browser-check',
+    ...MODE_ARGS[mode],
     'about:blank',
   ], { stdio: 'ignore' });
 

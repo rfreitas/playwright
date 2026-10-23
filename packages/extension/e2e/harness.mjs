@@ -57,7 +57,7 @@ async function setFileAccess(context, enabled) {
 // profile. Branded Chrome 137+ ignores --load-extension, so it cannot be used.
 // The profile dir is returned so a second process can hand pages to this
 // browser by launching the same executable on the same profile.
-export async function launchBrowserWithExtension({ headless = true } = {}) {
+export async function launchBrowserWithExtension({ headless = true, fileAccess = false } = {}) {
   assert.ok(fs.existsSync(path.join(distDir, 'manifest.json')), `Build the extension first: ${distDir} is missing`);
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pw-ext-e2e-'));
   const context = await chromium.launchPersistentContext(userDataDir, {
@@ -72,7 +72,7 @@ export async function launchBrowserWithExtension({ headless = true } = {}) {
   try {
     if (!context.serviceWorkers().length)
       await context.waitForEvent('serviceworker');
-    await setFileAccess(context, false);
+    await setFileAccess(context, fileAccess);
 
     // The status page creates the auth token that lets a connect page skip the approval click.
     const helper = await context.newPage();
