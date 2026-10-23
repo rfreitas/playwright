@@ -115,22 +115,24 @@ function connectUrl(relayUrl, withToken = token) {
 }
 
 // Opens a connect page that the token lets through, and returns once the
-// relay has attached the tab the extension handed it.
+// relay has attached the tab the extension created for the client. The connect
+// page was only the way in, so the extension closes it.
 async function connectClient(relay) {
-  const page = await newPage();
-  await page.goto(connectUrl(relay.url()));
+  const connectPage = await newPage();
+  await connectPage.goto(connectUrl(relay.url()));
   const created = await relay.waitForMessage(m => m.method === 'chrome.tabs.onCreated', 'the initial tab announcement');
   const tabId = created.params[0].id;
   await relay.waitForMessage(m => m.method === 'extension.initialized', 'extension.initialized');
   await waitUntil(() => relay.attachedTabIds.has(tabId), `tab ${tabId} to be attached`);
-  // Leave the connect page like a client would. Navigating off an extension page
-  // may detach the debugger, so wait for the extension to settle on attached.
-  await page.goto(siteUrl);
+  await waitUntil(() => connectPage.isClosed(), 'the connect page to close');
+  // Take the controlled tab to the site like a client would, and wait for the
+  // extension to settle on attached.
+  await helper.evaluate(({ id, url }) => chrome.tabs.update(id, { url }), { id: tabId, url: siteUrl });
   await relay.expectStaysOpen(500);
   await waitUntil(() => relay.attachedTabIds.has(tabId), `tab ${tabId} to be attached after navigating to the site`);
   // Put the helper in front so the controlled tab can be discarded.
   await helper.bringToFront();
-  return { page, tabId };
+  return { connectPage, tabId };
 }
 
 async function waitUntil(condition, description, timeout = 10_000) {
@@ -145,10 +147,13 @@ async function waitUntil(condition, description, timeout = 10_000) {
 describe('connecting', () => {
   test('a valid token connects without an approval click', async () => {
     const relay = await startRelay();
-    const { page, tabId } = await connectClient(relay);
+    const { connectPage, tabId } = await connectClient(relay);
     assert.ok(tabId);
     assert.equal(relay.closed, undefined);
-    assert.equal(page.url(), siteUrl);
+    assert.equal(connectPage.isClosed(), true);
+    const tab = await helper.evaluate(id => chrome.tabs.get(id), tabId);
+    assert.equal(tab.url, siteUrl);
+    assert.equal(tab.active, false, 'the client\'s tab opens behind the tab the user is on');
   });
 });
 
@@ -194,7 +199,7 @@ describe('lost tabs', () => {
 describe('stale connect pages', () => {
   test('connecting a client closes connect pages left by dead relays', async () => {
     const live = await startRelay();
-    const { page: livePage } = await connectClient(live);
+    await connectClient(live);
 
     // A connect page whose relay is gone: it can never connect and is never closed.
     const dead = await startRelay();
@@ -209,7 +214,6 @@ describe('stale connect pages', () => {
     await connectClient(next);
 
     await waitUntil(() => stalePage.isClosed(), 'the stale connect page to be closed');
-    assert.equal(livePage.isClosed(), false, 'the connected page is kept');
     assert.equal(live.closed, undefined, 'the other client stays connected');
   });
 });

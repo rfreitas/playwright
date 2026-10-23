@@ -83,12 +83,10 @@ class PlaywrightExtension {
             (error: any) => sendResponse({ success: false, error: error.message }));
         return true;
       case 'connectToTab': {
-        // Token-bypass (no specific pick) falls back to the connect page itself
-        // so `ConnectedTabGroup` always has a concrete tab to start from. Both
-        // sender.tab and UI-supplied tabs come from chrome.tabs.query / runtime
-        // message sender, where `id` is always defined.
-        const selectedTab = (message.tab ?? sender.tab!) as chrome.tabs.Tab & { id: number };
-        this._connectTab(sender.tab!.id!, selectedTab, message.clientName).then(
+        // Without a pick (the token skips the picker) the connect page was only the way in:
+        // `_connectTab` gives the agent a tab of its own. Both sender.tab and UI-supplied
+        // tabs come from chrome.tabs.query / runtime message sender, where `id` is always defined.
+        this._connectTab(sender.tab as chrome.tabs.Tab & { id: number }, message.tab as (chrome.tabs.Tab & { id: number }) | undefined, message.clientName).then(
             () => sendResponse({ success: true }),
             (error: any) => sendResponse({ success: false, error: error.message }));
         return true; // Return true to indicate that the response will be sent asynchronously
@@ -113,17 +111,27 @@ class PlaywrightExtension {
     }
   }
 
-  private async _connectTab(selectorTabId: number, tab: chrome.tabs.Tab & { id: number }, clientName: string | undefined): Promise<void> {
+  private async _connectTab(selectorTab: chrome.tabs.Tab & { id: number }, picked: (chrome.tabs.Tab & { id: number }) | undefined, clientName: string | undefined): Promise<void> {
+    const selectorTabId = selectorTab.id;
+    let tab = picked ?? selectorTab;
     this._connectingTabIds.add(selectorTabId);
     try {
       await this._cleanupPromise;
       this._releaseTab(selectorTabId);
-      if (tab.id !== selectorTabId && this._connectedTabIds().has(tab.id))
+      if (picked && picked.id !== selectorTabId && this._connectedTabIds().has(picked.id))
         throw new Error('This tab is already connected to another client');
 
       const connection = await this._pendingConnections.take(selectorTabId);
       if (!connection)
         throw new Error('Pending client connection closed');
+
+      // The connect page is in front because Chrome opened it. Nobody picked a tab, so it is
+      // not the user's tab to hand over: the agent gets one behind it, and the user goes back.
+      let previous: (chrome.tabs.Tab & { id: number }) | undefined;
+      if (!picked) {
+        previous = await this._tabBefore(selectorTab);
+        tab = await chrome.tabs.create({ windowId: selectorTab.windowId, url: 'about:blank', active: false }) as chrome.tabs.Tab & { id: number };
+      }
 
       const id = ++this._lastConnectionId;
       const taken = [...this._connections.values()].map(group => group.groupStyle);
@@ -137,14 +145,18 @@ class PlaywrightExtension {
       this._updateKeepalive();
       recordDiagnostic('connection.opened', { id, clientName, tabId: tab.id });
 
-      // Only when the user picked another tab in the connect page; the connect page itself is already in front.
-      if (tab.id !== selectorTabId) {
+      if (picked && picked.id !== selectorTabId) {
+        // The user picked this tab in the connect page: show it.
         await Promise.all([
           chrome.tabs.update(tab.id, { active: true }),
           chrome.windows.update(tab.windowId, { focused: true }),
         ]).catch(() => {});
-        await chrome.tabs.remove(selectorTabId).catch(() => {});
+      } else if (previous && (await chrome.tabs.get(selectorTabId).catch(() => undefined))?.active) {
+        // Before the connect page goes, so the user sees one switch and not two.
+        await chrome.tabs.update(previous.id, { active: true }).catch(() => {});
       }
+      if (tab.id !== selectorTabId)
+        await chrome.tabs.remove(selectorTabId).catch(() => {});
     } catch (error: any) {
       recordDiagnostic('connectTab.failed', { tabId: tab.id, message: error.message });
       debugLog(`Failed to connect tab ${tab.id}:`, error.message);
@@ -152,6 +164,16 @@ class PlaywrightExtension {
     } finally {
       this._connectingTabIds.delete(selectorTabId);
     }
+  }
+
+  // The tab the user was on before the connect page took the front: the most recently
+  // used other tab of its window. Chrome keeps the time, so nothing has to be tracked.
+  private async _tabBefore(connectPage: chrome.tabs.Tab): Promise<(chrome.tabs.Tab & { id: number }) | undefined> {
+    const tabs = await chrome.tabs.query({ windowId: connectPage.windowId });
+    const connectPageUrl = chrome.runtime.getURL('connect.html');
+    const others = tabs.filter(t => t.id !== undefined && t.id !== connectPage.id && !t.url?.startsWith(connectPageUrl));
+    others.sort((a, b) => (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0));
+    return others[0] as (chrome.tabs.Tab & { id: number }) | undefined;
   }
 
   // Chrome may create the connect page inside the active client's group.

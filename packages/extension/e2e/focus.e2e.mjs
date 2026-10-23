@@ -83,15 +83,16 @@ async function assertUserStillThere(userTab, step) {
 describe('with a connection that is already open', () => {
   test('nothing the agent does moves the user off their tab', { timeout: 180_000 }, async () => {
     const session = await newSession();
-    const connect = await session.callToolConnecting('browser_navigate', { url: siteUrl });
+    const url = `${siteUrl}open`;
+    const connect = await session.callToolConnecting('browser_navigate', { url });
     assert.equal(connect.isError, false, connect.text);
 
     // The user goes back to their own tab; connecting is checked separately below.
     const userTab = await openUserTab();
 
     const steps = [
-      ['browser_navigate', { url: siteUrl }],
-      ['browser_tabs', { action: 'new', url: siteUrl }],
+      ['browser_navigate', { url }],
+      ['browser_tabs', { action: 'new', url }],
       ['browser_snapshot', {}],
       ['browser_take_screenshot', { type: 'png' }],
       ['browser_click', { element: 'Go button', target: '#go' }],
@@ -113,7 +114,7 @@ describe('connecting', () => {
     const userTab = await openUserTab();
     const session = await newSession();
 
-    const result = await session.callToolConnecting('browser_navigate', { url: siteUrl });
+    const result = await session.callToolConnecting('browser_navigate', { url: `${siteUrl}first` });
     assert.equal(result.isError, false, result.text);
 
     await assertUserStillThere(userTab, 'connecting for the first time');
@@ -122,17 +123,18 @@ describe('connecting', () => {
 
   test('reconnecting after the connection is lost leaves the user on their tab', { timeout: 180_000 }, async () => {
     const session = await newSession();
-    const first = await session.callToolConnecting('browser_navigate', { url: siteUrl });
+    const url = `${siteUrl}reconnect`;
+    const first = await session.callToolConnecting('browser_navigate', { url });
     assert.equal(first.isError, false, first.text);
 
     // The user closes the controlled tab, which ends the connection.
-    const controlled = (await browser.targets()).find(t => t.url.startsWith(siteUrl));
+    const controlled = (await browser.targets()).find(t => t.url.startsWith(url));
     assert.ok(controlled, 'the controlled tab is not on the site');
     await browser.closeTab(controlled);
     await sleep(1500);
 
     const userTab = await openUserTab();
-    const second = await session.callToolConnecting('browser_navigate', { url: siteUrl });
+    const second = await session.callToolConnecting('browser_navigate', { url });
     assert.equal(second.isError, false, second.text);
 
     await assertUserStillThere(userTab, 'reconnecting');
