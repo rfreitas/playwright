@@ -231,6 +231,7 @@ export class Context {
     if (crashed)
       this._currentTab!.logErrorMessage('Page crashed and was reset to about:blank.');
     await this._currentTab!.waitForInitialized();
+    await this._currentTab!.ensureVisible();
     return this._currentTab!;
   }
 
