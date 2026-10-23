@@ -312,7 +312,16 @@ export class RelayConnection {
   private async _handleCommand(message: ProtocolCommand): Promise<any> {
     if (!ALLOWED_CHROME_COMMANDS.has(message.method))
       throw new Error(`Unknown method: ${message.method}`);
-    const args = (message.params ?? []) as any[];
+    let args = (message.params ?? []) as any[];
+    // The agent works in the background: it must not change which tab or window the user is on.
+    // Tabs it opens stay behind, and tabs do not need to be in front to work (the server
+    // emulates focus), so a request to bring one to the front is dropped.
+    if (message.method === 'chrome.tabs.create')
+      args = [{ ...args[0], active: false }, ...args.slice(1)];
+    if (message.method === 'chrome.debugger.sendCommand' && args[1] === 'Page.bringToFront') {
+      recordDiagnostic('bringToFront.ignored', { tabId: args[0]?.tabId });
+      return {};
+    }
     const result = await invokeChromeMethod(message.method, args);
     // Attach bookkeeping; detach flows through the chrome.debugger.onDetach event.
     if (message.method === 'chrome.debugger.attach') {

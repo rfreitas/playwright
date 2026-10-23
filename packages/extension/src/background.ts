@@ -137,13 +137,14 @@ class PlaywrightExtension {
       this._updateKeepalive();
       recordDiagnostic('connection.opened', { id, clientName, tabId: tab.id });
 
-      await Promise.all([
-        chrome.tabs.update(tab.id, { active: true }),
-        chrome.windows.update(tab.windowId, { focused: true }),
-      ]).catch(() => {});
-
-      if (tab.id !== selectorTabId)
+      // Only when the user picked another tab in the connect page; the connect page itself is already in front.
+      if (tab.id !== selectorTabId) {
+        await Promise.all([
+          chrome.tabs.update(tab.id, { active: true }),
+          chrome.windows.update(tab.windowId, { focused: true }),
+        ]).catch(() => {});
         await chrome.tabs.remove(selectorTabId).catch(() => {});
+      }
     } catch (error: any) {
       recordDiagnostic('connectTab.failed', { tabId: tab.id, message: error.message });
       debugLog(`Failed to connect tab ${tab.id}:`, error.message);
