@@ -40,10 +40,10 @@ export async function createExtensionBrowser(channel: string, executablePath: st
 
   try {
     await relay.establishExtensionConnection(clientName);
-    // Not `isLocal`: the browser is on this machine, but Chrome refuses DOM.setFileInputFiles over
+    // The browser is on this machine, so files go by path, with no size limit. Chrome refuses that over
     // chrome.debugger ("Not allowed") unless the user turned on "Allow access to file URLs" for the
-    // extension. Without it, Playwright reads the files here and sets them from the page instead.
-    const browser = await playwright.chromium.connectOverCDP(relay.cdpEndpoint(), { timeout: 0, noDefaults: true });
+    // extension; browser_file_upload then falls back to sending the content (see files.ts).
+    const browser = await playwright.chromium.connectOverCDP(relay.cdpEndpoint(), { timeout: 0, noDefaults: true, isLocal: true });
     browser.on('disconnected', () => relay.stop());
     return browser;
   } catch (error) {

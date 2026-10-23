@@ -14,10 +14,39 @@
  * limitations under the License.
  */
 
+import fs from 'fs';
+import path from 'path';
+
 import * as z from 'zod';
 import { formatObject } from '@isomorphic/stringUtils';
+import { getMimeTypeForPath } from '@isomorphic/mimeType';
 import { defineTabTool } from './tool';
 import { elementSchema } from './snapshot';
+
+import type * as playwright from '../../..';
+
+// Playwright refuses to send more than this as content.
+const contentUploadLimit = 50 * 1024 * 1024;
+
+// By path first, which has no size limit. Chrome refuses paths over chrome.debugger ("Not allowed")
+// unless the user turned on "Allow access to file URLs" for the extension; then send the content.
+async function setFiles(fileChooser: playwright.FileChooser, paths: string[]) {
+  try {
+    await fileChooser.setFiles(paths);
+    return;
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes('Not allowed'))
+      throw error;
+  }
+  const sizes = await Promise.all(paths.map(async filePath => (await fs.promises.stat(filePath)).size));
+  if (sizes.reduce((a, b) => a + b, 0) > contentUploadLimit)
+    throw new Error('Files over 50 MB can only be uploaded by path, and the browser refused the path. Turn on "Allow access to file URLs" for the Playwright extension in chrome://extensions and try again.');
+  await fileChooser.setFiles(await Promise.all(paths.map(async filePath => ({
+    name: path.basename(filePath),
+    mimeType: getMimeTypeForPath(filePath) ?? 'application/octet-stream',
+    buffer: await fs.promises.readFile(filePath),
+  }))));
+}
 
 export const uploadFile = defineTabTool({
   capability: 'core',
@@ -47,7 +76,7 @@ export const uploadFile = defineTabTool({
     try {
       await tab.waitForCompletion(async () => {
         if (paths)
-          await modalState.fileChooser.setFiles(paths);
+          await setFiles(modalState.fileChooser, paths);
       });
     } catch (e) {
       tab.setModalState(modalState);
