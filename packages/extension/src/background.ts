@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { recordDiagnostic } from './diagnostics';
 import { debugLog } from './relayConnection';
 import { PendingConnections } from './pendingConnection';
 import { ConnectedTabGroup, cleanupStalePlaywrightGroups, isNonDebuggableUrl, ungroupTabs, uniqueGroupStyle } from './connectedTabGroup';
@@ -45,10 +46,14 @@ class PlaywrightExtension {
   // Service worker restarts lose all connection state, so any existing
   // Playwright groups are stale. Connections wait on this before reconciling.
   private _cleanupPromise: Promise<void>;
+  private _keepaliveTimer: ReturnType<typeof setInterval> | undefined;
+  // Connect pages between `connectionRequested` and the group being created.
+  private _connectingTabIds = new Set<number>();
 
   constructor() {
     chrome.runtime.onMessage.addListener(this._onMessage.bind(this));
     chrome.action.onClicked.addListener(this._onActionClicked.bind(this));
+    recordDiagnostic('serviceWorker.start');
     this._cleanupPromise = cleanupStalePlaywrightGroups();
   }
 
@@ -57,8 +62,10 @@ class PlaywrightExtension {
     switch (message.type) {
       case 'connectionRequested': {
         const selectorTabId = sender.tab!.id!;
-        this._releaseConnectPage(selectorTabId).then(() => {
+        recordDiagnostic('connectionRequested', { selectorTabId, mcpRelayUrl: message.mcpRelayUrl });
+        this._releaseConnectPage(selectorTabId).then(async () => {
           this._pendingConnections.create(selectorTabId, message.mcpRelayUrl);
+          await this._closeStaleConnectPages(selectorTabId);
           sendResponse({ success: true });
         });
         return true;
@@ -100,6 +107,7 @@ class PlaywrightExtension {
   }
 
   private async _connectTab(selectorTabId: number, tab: chrome.tabs.Tab & { id: number }, clientName: string | undefined): Promise<void> {
+    this._connectingTabIds.add(selectorTabId);
     try {
       await this._cleanupPromise;
       this._releaseTab(selectorTabId);
@@ -113,8 +121,14 @@ class PlaywrightExtension {
       const id = ++this._lastConnectionId;
       const taken = [...this._connections.values()].map(group => group.groupStyle);
       const group = new ConnectedTabGroup(connection, tab, clientName, uniqueGroupStyle(clientName, taken), tabId => this._pendingConnections.has(tabId));
-      group.onclose = () => this._connections.delete(id);
+      group.onclose = () => {
+        recordDiagnostic('connection.closed', { id, clientName });
+        this._connections.delete(id);
+        this._updateKeepalive();
+      };
       this._connections.set(id, group);
+      this._updateKeepalive();
+      recordDiagnostic('connection.opened', { id, clientName, tabId: tab.id });
 
       await Promise.all([
         chrome.tabs.update(tab.id, { active: true }),
@@ -124,8 +138,11 @@ class PlaywrightExtension {
       if (tab.id !== selectorTabId)
         await chrome.tabs.remove(selectorTabId).catch(() => {});
     } catch (error: any) {
+      recordDiagnostic('connectTab.failed', { tabId: tab.id, message: error.message });
       debugLog(`Failed to connect tab ${tab.id}:`, error.message);
       throw error;
+    } finally {
+      this._connectingTabIds.delete(selectorTabId);
     }
   }
 
@@ -133,6 +150,36 @@ class PlaywrightExtension {
   private async _releaseConnectPage(tabId: number): Promise<void> {
     this._releaseTab(tabId);
     await ungroupTabs([tabId]);
+  }
+
+  // Every retry on the MCP side opens a fresh connect page, and the pages of
+  // dead relays are never closed. Drop any connect page that is neither
+  // connected, awaiting approval, nor the one that is connecting now.
+  private async _closeStaleConnectPages(currentTabId: number): Promise<void> {
+    try {
+      const pages = await chrome.tabs.query({ url: chrome.runtime.getURL('connect.html') + '*' });
+      const connected = this._connectedTabIds();
+      const stale = pages.map(page => page.id).filter((id): id is number =>
+        id !== undefined && id !== currentTabId && !connected.has(id) && !this._pendingConnections.has(id) && !this._connectingTabIds.has(id));
+      if (!stale.length)
+        return;
+      recordDiagnostic('connectPages.closeStale', { tabIds: stale });
+      await chrome.tabs.remove(stale);
+    } catch (error: any) {
+      debugLog('Error closing stale connect pages:', error);
+    }
+  }
+
+  // MV3 suspends the service worker after ~30s without extension API activity,
+  // which kills the relay WebSocket. While any client is connected, a cheap API
+  // call every 20s keeps it running even when the connect page is gone.
+  private _updateKeepalive(): void {
+    if (this._connections.size && !this._keepaliveTimer) {
+      this._keepaliveTimer = setInterval(() => void chrome.runtime.getPlatformInfo(), 20_000);
+    } else if (!this._connections.size && this._keepaliveTimer) {
+      clearInterval(this._keepaliveTimer);
+      this._keepaliveTimer = undefined;
+    }
   }
 
   private _releaseTab(tabId: number): void {

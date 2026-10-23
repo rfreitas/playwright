@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+import { recordDiagnostic } from './diagnostics';
+
 export function debugLog(...args: unknown[]): void {
   const enabled = true;
   if (enabled) {
@@ -55,8 +57,13 @@ const CHROME_EVENT_METHODS = [
 ];
 
 const REATTACH_DELAY_MS = 150;
+const REATTACH_MAX_DELAY_MS = 2000;
 const REATTACH_VERIFY_MS = 2500;
-const REATTACH_COOLDOWN_MS = 3000;
+// A tab may detach again right after a re-attach (cross-process navigations,
+// DevTools), so allow a few attempts in a window instead of giving up on the
+// whole connection at the second detach.
+const REATTACH_WINDOW_MS = 30_000;
+const REATTACH_MAX_ATTEMPTS = 5;
 
 export class RelayConnection {
   private _ws: WebSocket;
@@ -67,7 +74,7 @@ export class RelayConnection {
   private _eventListeners: Array<{ remove: () => void }> = [];
   private _closed = false;
   private _pendingReattach = new Set<number>();
-  private _recentReattach = new Set<number>();
+  private _reattachAttempts = new Map<number, number[]>();
 
   onclose?: () => void;
   ontabattached?: (tabId: number) => void;
@@ -81,7 +88,10 @@ export class RelayConnection {
     this._ws = ws;
     this._installEventForwarders();
     this._ws.onmessage = this._onMessage.bind(this);
-    this._ws.onclose = () => this._onClose();
+    this._ws.onclose = event => {
+      recordDiagnostic('relay.ws.close', { code: event.code, reason: event.reason, attachedTabs: [...this._attachedTabs], alreadyClosed: this._closed });
+      this._onClose();
+    };
   }
 
   // Signals the end of the initial-tab handshake — call after the initial
@@ -93,6 +103,7 @@ export class RelayConnection {
   }
 
   close(message: string): void {
+    recordDiagnostic('relay.close', { message, attachedTabs: [...this._attachedTabs] });
     this._ws.close(1000, message);
     // ws.onclose is called asynchronously, so we call it here to avoid forwarding
     // CDP events to the closed connection.
@@ -154,7 +165,7 @@ export class RelayConnection {
       return;
     this._closed = true;
     this._pendingReattach.clear();
-    this._recentReattach.clear();
+    this._reattachAttempts.clear();
     for (const l of this._eventListeners)
       l.remove();
     this._eventListeners = [];
@@ -180,8 +191,10 @@ export class RelayConnection {
     // chrome.debugger.onDetach is the single source of truth for detach bookkeeping.
     if (fullMethod === 'chrome.debugger.onDetach') {
       const reason = args[1] as string | undefined;
+      recordDiagnostic('debugger.onDetach', { tabId, reason });
       this._notifyTabDetached(tabId);
-      if (reason === 'target_closed' && this._maybeScheduleReattach(tabId))
+      // 'canceled_by_user' is the user dismissing the debugging infobar; honour it.
+      if (reason !== 'canceled_by_user' && this._maybeScheduleReattach(tabId))
         return;
       this._checkLastTabDetached();
     }
@@ -190,14 +203,18 @@ export class RelayConnection {
   private _maybeScheduleReattach(tabId: number): boolean {
     if (this._closed)
       return false;
-    if (this._recentReattach.has(tabId)) {
-      debugLog(`Not re-attaching tab ${tabId}: re-detached within ${REATTACH_COOLDOWN_MS}ms`);
+    const now = Date.now();
+    const attempts = (this._reattachAttempts.get(tabId) ?? []).filter(t => now - t < REATTACH_WINDOW_MS);
+    if (attempts.length >= REATTACH_MAX_ATTEMPTS) {
+      recordDiagnostic('reattach.giveUp', { tabId, attempts: attempts.length });
       return false;
     }
-    this._recentReattach.add(tabId);
-    setTimeout(() => this._recentReattach.delete(tabId), REATTACH_COOLDOWN_MS);
+    attempts.push(now);
+    this._reattachAttempts.set(tabId, attempts);
+    const delay = Math.min(REATTACH_DELAY_MS * 2 ** (attempts.length - 1), REATTACH_MAX_DELAY_MS);
+    recordDiagnostic('reattach.schedule', { tabId, attempt: attempts.length, delay });
     this._pendingReattach.add(tabId);
-    setTimeout(() => void this._tryReattach(tabId), REATTACH_DELAY_MS);
+    setTimeout(() => void this._tryReattach(tabId), delay);
     return true;
   }
 
@@ -212,6 +229,7 @@ export class RelayConnection {
     try {
       tab = await chrome.tabs.get(tabId);
     } catch {
+      recordDiagnostic('reattach.tabGone', { tabId });
       this._pendingReattach.delete(tabId);
       this._checkLastTabDetached();
       return;
@@ -227,7 +245,12 @@ export class RelayConnection {
       if (this._reattachAborted(tabId))
         return;
       this._pendingReattach.delete(tabId);
-      if (!this._attachedTabs.has(tabId))
+      if (this._attachedTabs.has(tabId)) {
+        recordDiagnostic('reattach.ok', { tabId });
+        return;
+      }
+      // The attach did not take; try again before concluding the tab is lost.
+      if (!this._maybeScheduleReattach(tabId))
         this._checkLastTabDetached();
     }, REATTACH_VERIFY_MS);
   }
