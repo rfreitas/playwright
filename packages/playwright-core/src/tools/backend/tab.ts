@@ -172,20 +172,6 @@ export class Tab extends EventEmitter<TabEventsInterface> {
     await this._initializedPromise;
   }
 
-  // A tab that is not the active tab of its window is hidden: it does not paint,
-  // requestAnimationFrame never fires, and actions wait on that until they time out.
-  // Browsers Playwright launches always report visible, so this only acts on a
-  // browser the user is also using.
-  async ensureVisible() {
-    let timer: NodeJS.Timeout | undefined;
-    const hidden = await Promise.race([
-      this.page.evaluate(() => document.visibilityState === 'hidden'),
-      new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), 1000); }),
-    ]).catch(() => false).finally(() => clearTimeout(timer));
-    if (hidden)
-      await this.page.bringToFront().catch(() => {});
-  }
-
   static forPage(page: playwright.Page): Tab | undefined {
     // eslint-disable-next-line no-restricted-syntax
     return (page as any)[tabSymbol];

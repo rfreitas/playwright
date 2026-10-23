@@ -548,7 +548,9 @@ class FrameSession {
           this._crPage._browserContext === this._crPage._browserContext._browser._defaultContext;
       if (this._crPage._browserContext.needsPlaywrightBinding())
         promises.push(this.exposePlaywrightBinding());
-      if (this._isMainFrame() && !skipDefaultOverrides)
+      // Also in a browser the user is using: without it a tab that is not in front is hidden,
+      // actions wait on requestAnimationFrame, and the only way out is to switch tabs for the user.
+      if (this._isMainFrame())
         promises.push(this._client.send('Emulation.setFocusEmulationEnabled', { enabled: true }));
       const options = this._crPage._browserContext._options;
       if (options.bypassCSP)
