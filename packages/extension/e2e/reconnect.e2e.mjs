@@ -79,6 +79,11 @@ async function startSession({ token, connectTimeout }) {
     for (const match of chunk.toString().matchAll(/extension endpoint: (ws:\/\/\S+?)\.?\s/g))
       session.announced.push(match[1]);
   });
+  transport.stderr.on('data', chunk => {
+    const match = /server id: (\S+)/.exec(chunk.toString());
+    if (match)
+      session.serverId = match[1];
+  });
   sessions.push(session);
   return session;
 }
@@ -104,6 +109,7 @@ async function callToolConnecting(session, name, args) {
     client: JSON.stringify({ name: 'reconnect-e2e' }),
     protocolVersion: '2',
     token: session.token,
+    ...(session.serverId ? { serverId: session.serverId } : {}),
   });
   await browser.newTab(`${extensionOrigin}/connect.html?${params}`);
   return await result;

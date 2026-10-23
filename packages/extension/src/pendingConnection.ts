@@ -20,13 +20,31 @@ import { RelayConnection, debugLog } from './relayConnection';
 // id. The relay WebSocket opens lazily in `take` once the user clicks Allow.
 export class PendingConnections {
   private _map = new Map<number, string>();
+  // Which server process asked, when it said so.
+  private _serverIds = new Map<number, string>();
 
   constructor() {
-    chrome.tabs.onRemoved.addListener(tabId => this._map.delete(tabId));
+    chrome.tabs.onRemoved.addListener(tabId => {
+      this._map.delete(tabId);
+      this._serverIds.delete(tabId);
+    });
   }
 
-  create(selectorTabId: number, mcpRelayUrl: string): void {
+  create(selectorTabId: number, mcpRelayUrl: string, serverId?: string): void {
     this._map.set(selectorTabId, mcpRelayUrl);
+    if (serverId)
+      this._serverIds.set(selectorTabId, serverId);
+  }
+
+  // A server only asks again once its previous attempt is over, so the connect
+  // pages it left waiting for approval are dead ends. Forgets and returns them.
+  supersede(selectorTabId: number, serverId: string): number[] {
+    const superseded = [...this._serverIds].filter(([tabId, id]) => id === serverId && tabId !== selectorTabId).map(([tabId]) => tabId);
+    for (const tabId of superseded) {
+      this._map.delete(tabId);
+      this._serverIds.delete(tabId);
+    }
+    return superseded;
   }
 
   // A connect page awaiting approval; no connection may claim its tab.
@@ -39,6 +57,7 @@ export class PendingConnections {
     if (mcpRelayUrl === undefined)
       return undefined;
     this._map.delete(selectorTabId);
+    this._serverIds.delete(selectorTabId);
     return openRelayConnection(mcpRelayUrl);
   }
 }

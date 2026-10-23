@@ -52,6 +52,9 @@ const debugLogger = debug('pw:mcp:relay');
 
 const extensionConnectionTimeout = +(process.env.PWTEST_EXTENSION_CONNECT_TIMEOUT ?? 30_000);
 
+// One per server process: every connection attempt of this process carries it.
+const serverId = crypto.randomUUID();
+
 type CDPCommand = {
   id: number;
   sessionId?: string;
@@ -129,7 +132,7 @@ export class CDPRelayServer {
   }
 
   async establishExtensionConnection(clientName: string) {
-    debugLogger('Establishing extension connection');
+    debugLogger(`Establishing extension connection, server id: ${serverId}`);
     await this._openConnectPageInBrowser(clientName);
     debugLogger('Waiting for incoming extension connection');
     // Without a token the user has to approve the connection in the browser, which can take arbitrarily long.
@@ -156,6 +159,8 @@ export class CDPRelayServer {
     };
     url.searchParams.set('client', JSON.stringify(client));
     url.searchParams.set('protocolVersion', this._protocolVersion.toString());
+    // Lets the extension tell that a retry from this process replaces its earlier connect pages.
+    url.searchParams.set('serverId', serverId);
     if (this._token)
       url.searchParams.set('token', this._token);
     const href = url.toString();

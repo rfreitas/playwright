@@ -22,6 +22,8 @@ import { ConnectedTabGroup, cleanupStalePlaywrightGroups, isNonDebuggableUrl, un
 type PageMessage = {
   type: 'connectionRequested';
   mcpRelayUrl: string;
+  // Identifies the MCP server process; absent from servers that do not send it.
+  serverId?: string;
 } | {
   type: 'getTabs';
 } | {
@@ -64,7 +66,12 @@ class PlaywrightExtension {
         const selectorTabId = sender.tab!.id!;
         recordDiagnostic('connectionRequested', { selectorTabId, mcpRelayUrl: message.mcpRelayUrl });
         this._releaseConnectPage(selectorTabId).then(async () => {
-          this._pendingConnections.create(selectorTabId, message.mcpRelayUrl);
+          this._pendingConnections.create(selectorTabId, message.mcpRelayUrl, message.serverId);
+          const superseded = message.serverId ? this._pendingConnections.supersede(selectorTabId, message.serverId) : [];
+          if (superseded.length) {
+            recordDiagnostic('connectPages.superseded', { tabIds: superseded, serverId: message.serverId });
+            await chrome.tabs.remove(superseded).catch(() => {});
+          }
           await this._closeStaleConnectPages(selectorTabId);
           sendResponse({ success: true });
         });

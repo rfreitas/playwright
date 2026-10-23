@@ -91,7 +91,7 @@ const ConnectApp: React.FC = () => {
       }
       // The background only records the relay URL; the WS to the relay opens
       // once the user clicks Allow.
-      await chrome.runtime.sendMessage({ type: 'connectionRequested', mcpRelayUrl: relayUrl });
+      await chrome.runtime.sendMessage({ type: 'connectionRequested', mcpRelayUrl: relayUrl, serverId: params.get('serverId') ?? undefined });
 
       const expectedToken = getOrCreateAuthToken();
       const token = params.get('token');
