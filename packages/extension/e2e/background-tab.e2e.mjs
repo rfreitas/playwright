@@ -204,3 +204,53 @@ describe('a controlled tab that is hidden', () => {
     }
   });
 });
+
+describe('the agent managing tabs', () => {
+  async function targetIds() {
+    return new Set((await browser.targets()).map(t => t.id));
+  }
+
+  async function closeNewTargets(before) {
+    for (const target of await browser.targets()) {
+      if (!before.has(target.id))
+        await browser.closeTab(target).catch(() => {});
+    }
+  }
+
+  test('a tab the agent opens does not come to the front', { timeout: 150_000 }, async () => {
+    await openSite();
+    const userTab = await browser.newTab('about:blank');
+    await sleep(500);
+    const before = await targetIds();
+
+    const result = await callTool('browser_tabs', { action: 'new', url: 'about:blank' });
+    await sleep(800);
+    const userVisibility = await browser.evaluate(userTab, 'document.visibilityState').catch(() => 'gone');
+    const opened = [...await targetIds()].filter(id => !before.has(id));
+    await closeNewTargets(before);
+    await browser.closeTab(userTab).catch(() => {});
+
+    assert.equal(result.isError, false, result.text);
+    assert.equal(opened.length, 1, 'the agent should have opened one tab');
+    assert.equal(userVisibility, 'visible', 'the new tab was brought to the front over the tab the user was on');
+  });
+
+  test('selecting a tab does not switch the tab the user is on', { timeout: 150_000 }, async () => {
+    await openSite();
+    const opened = await callTool('browser_tabs', { action: 'new', url: siteUrl });
+    assert.equal(opened.isError, false, opened.text);
+    await sleep(500);
+    const userTab = await browser.newTab('about:blank');
+    await sleep(500);
+    const before = await targetIds();
+
+    const select = await callTool('browser_tabs', { action: 'select', index: 0 });
+    await sleep(800);
+    const userVisibility = await browser.evaluate(userTab, 'document.visibilityState').catch(() => 'gone');
+    await browser.closeTab(userTab).catch(() => {});
+
+    assert.equal(select.isError, false, select.text);
+    assert.equal(userVisibility, 'visible', 'selecting a tab for the agent switched the browser to it');
+    assert.ok(before.size > 0);
+  });
+});
