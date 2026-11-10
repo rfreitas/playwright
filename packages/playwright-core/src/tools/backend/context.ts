@@ -167,7 +167,7 @@ export class Context {
   }
 
   private _closeOwnTabs = async () => {
-    await Promise.all(this._tabs.filter(tab => !tab.isolatedContext).map(tab => tab.page.close().catch(() => {})));
+    await Promise.all(this._tabs.map(tab => tab.page.close().catch(() => {})));
   };
 
   async dispose() {
