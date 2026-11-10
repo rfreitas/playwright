@@ -208,3 +208,49 @@ test('cdp server with empty and complex headers', async ({ startClient, server }
   expect(customHeader).toBe('value:with:colons');
   expect(emptyHeader).toBe('');
 });
+
+test('private tabs: each client has its own tabs in its own window, and they share the profile', async ({ cdpServer, startClient, server }) => {
+  const browserContext = await cdpServer.start();
+  const [existing] = browserContext.pages();
+  await existing.goto(server.HELLO_WORLD);
+  await existing.evaluate(() => { localStorage.setItem('who', 'shared'); });
+  const args = [`--cdp-endpoint=${cdpServer.endpoint}`, '--private-tabs'];
+
+  const { client: a } = await startClient({ args });
+  const { client: b } = await startClient({ args });
+  await a.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + 'a' } });
+  await b.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + 'b' } });
+
+  // Neither client took the existing tab, and each one lists only its own.
+  expect(existing.url()).toBe(server.HELLO_WORLD);
+  expect(await a.callTool({ name: 'browser_tabs', arguments: { action: 'list' } })).toHaveResponse({
+    tabs: `- 0: (current) [] (${server.PREFIX}a)`,
+  });
+  expect(await b.callTool({ name: 'browser_tabs', arguments: { action: 'list' } })).toHaveResponse({
+    tabs: `- 0: (current) [] (${server.PREFIX}b)`,
+  });
+
+  // Same profile: storage written in the existing tab is visible to the clients.
+  const pageA = browserContext.pages().find(p => p.url() === server.PREFIX + 'a')!;
+  const pageB = browserContext.pages().find(p => p.url() === server.PREFIX + 'b')!;
+  expect(await pageA.evaluate(() => localStorage.getItem('who'))).toBe('shared');
+
+  // Own windows, so bringing one tab to the front does not hide the other client's tab.
+  const windowOf = async (page: typeof pageA) => {
+    const session = await browserContext.newCDPSession(page);
+    const { windowId } = await session.send('Browser.getWindowForTarget');
+    await session.detach();
+    return windowId;
+  };
+  expect(await windowOf(pageA)).not.toBe(await windowOf(existing));
+  expect(await windowOf(pageA)).not.toBe(await windowOf(pageB));
+
+  // A popup belongs to the client whose tab opened it.
+  await a.callTool({ name: 'browser_evaluate', arguments: { function: `() => window.open('${server.PREFIX}popup')` } });
+  await expect.poll(async () => (await a.callTool({ name: 'browser_tabs', arguments: { action: 'list' } })).content[0].text).toContain('popup');
+  expect((await b.callTool({ name: 'browser_tabs', arguments: { action: 'list' } })).content[0].text).not.toContain('popup');
+
+  // A client that disconnects takes its tabs with it, and leaves everyone else's alone.
+  await a.close();
+  await expect.poll(() => browserContext.pages().map(p => p.url()).sort()).toEqual([server.HELLO_WORLD, server.PREFIX + 'b']);
+});
