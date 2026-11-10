@@ -188,6 +188,8 @@ Playwright MCP supports three profile modes:
 
 A browser attached over `--cdp-endpoint` is often shared by several clients, so that they all use its logins. By default every client sees every tab, and one client can act on or close another client's tab. Pass `--private-tabs` to give each client its own tabs: it lists only the tabs it opened, and the popups they open; each of its tabs opens in a window of its own, so bringing it to the front does not hide another client's tab; and its tabs are closed when the client disconnects. Cookies and storage are still shared, since it is the same profile.
 
+Each private-tabs session has a token, shown in its first response and by `browser_tabs` `list`, and a record of its tabs under `sessions/` in the output directory. On an HTTP server the tabs of a client that disconnected stay open for a grace period, `--resume-grace` in milliseconds, 30 minutes by default; `browser_tabs` `resume` with the token takes them over, or reopens them from the record once they are gone. `browser_sessions` lists the sessions and their state.
+
 ### Idle timeout
 
 A page that keeps animating or rendering costs CPU for as long as the browser is open, and an agent session can last hours. A headless browser launched by the server is therefore closed after an hour without tool calls. Headed browsers, and browsers attached over `--cdp-endpoint` or `--extension`, are never closed automatically. Pass `--idle-timeout` to set the timeout in milliseconds for any mode, or `0` to disable it:

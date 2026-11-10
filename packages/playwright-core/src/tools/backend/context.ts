@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -27,12 +28,14 @@ import { isPathInside, isSystemDirectory, isWritable, resolveSymlinks, sanitizeF
 import { playwright } from '../../inprocess';
 
 import { dedent, languageGeneratorId, secretCode } from './codegen';
+import { deleteRecord, graceSessions, liveSessions, parkSession, readRecord, sessionsDir, takeSession, writeRecord } from './sessions';
 import { Tab } from './tab';
 
 import type { BrowserContextEx } from './browserContextEx';
 import type { CodegenLanguage } from './codegen';
 import type * as playwrightTypes from '../../..';
 import type { SessionLog } from './sessionLog';
+import type { SessionRecord } from './sessions';
 import type { Disposable } from '@isomorphic/disposable';
 import type { ToolCapability } from './tool';
 import type { WebMCPToolDefinition } from './webmcp';
@@ -57,6 +60,7 @@ export type ContextConfig = {
   redactUrlParams?: string[];
   sharedBrowserContext?: boolean;
   privateTabs?: boolean;
+  resumeGrace?: number;
   snapshot?: {
     mode?: 'full' | 'none';
     boxes?: boolean;
@@ -81,8 +85,14 @@ type ContextOptions = {
   config: ContextConfig;
   sessionLog?: SessionLog;
   cwd: string;
+  clientName: string;
   onWebMCPToolsChanged?: () => void;
+  // Closes the browser connection: at dispose, or when the resume grace of a private-tabs session ends.
+  closeBrowser?: () => Promise<void>;
 };
+
+// What resolving a file against the workspace or the output directory needs.
+type FileOptions = Pick<ContextOptions, 'config' | 'cwd'>;
 
 export type RouteEntry = {
   pattern: string;
@@ -107,6 +117,8 @@ export type TraceInfo = { name: string, isolatedContext?: string };
 
 // Actions are paced by this delay when the cursor is shown, giving it time to travel.
 const kCursorDuration = 800;
+
+const kResumeReminder = 'A session that disconnected recently is still open; browser_sessions lists it, browser_tabs resume takes it over.';
 
 export class Context {
   readonly config: ContextConfig;
@@ -134,6 +146,11 @@ export class Context {
     traces: (TraceInfo & { browserContext: playwrightTypes.BrowserContext })[];
   } | undefined;
   private _disposables: Disposable[] = [];
+  // Private tabs only: the session other clients can list and resume.
+  private _session: { token: string, startedAt: string } | undefined;
+  private _sessionAnnounced = false;
+  private _resumed = false;
+  private _recordTimer: NodeJS.Timeout | undefined;
 
   private _webmcpToolsSignature = '';
   private _redactUrlParamsRegex: RegExp | undefined;
@@ -162,8 +179,11 @@ export class Context {
     testDebug('create context');
     process.on('unhandledRejection', this._onUnhandledRejection);
     // A stdio client that goes away ends the process through the exit watchdog, not through dispose().
-    if (this.config.privateTabs)
+    if (this.config.privateTabs) {
       gracefullyCloseSet.add(this._closeOwnTabs);
+      this._session = { token: crypto.randomBytes(12).toString('hex'), startedAt: new Date().toISOString() };
+      liveSessions.add(this._session.token);
+    }
   }
 
   private _closeOwnTabs = async () => {
@@ -175,9 +195,13 @@ export class Context {
     await this.stopRecording();
     await this.stopVideoRecording();
     await disposeAll(this._disposables);
+    let closeBrowser = this.options.closeBrowser;
     if (this.config.privateTabs) {
       gracefullyCloseSet.delete(this._closeOwnTabs);
-      await this._closeOwnTabs();
+      if (await this._endSession())
+        closeBrowser = undefined;
+      else
+        await this._closeOwnTabs();
     }
     for (const tab of this._tabs)
       await tab.dispose();
@@ -185,6 +209,125 @@ export class Context {
     this._setCurrentTab(undefined);
     await Promise.all([...this._browserContexts].filter(([isolatedContext]) => isolatedContext).map(([, browserContext]) => browserContext.then(c => c.close()).catch(() => {})));
     this._browserContexts.clear();
+    await closeBrowser?.();
+  }
+
+  // Closes the record and, when a client may still come back for the windows, parks them with the
+  // connection in the grace registry instead of closing them. Returns whether it parked them.
+  private async _endSession(): Promise<boolean> {
+    liveSessions.delete(this._session!.token);
+    const pending = this._recordTimer !== undefined;
+    clearTimeout(this._recordTimer);
+    if (!this._tabs.length && !pending)
+      return false;
+    const record = await this._writeRecord(new Date().toISOString());
+    const grace = this.config.resumeGrace ?? 0;
+    if (!grace || !record.tabs.length || !this._defaultBrowserContext.browser()?.isConnected())
+      return false;
+    parkSession(record, this._tabs.filter(tab => !tab.isolatedContext).map(tab => tab.page), grace, this.options.closeBrowser);
+    return true;
+  }
+
+  sessionToken(): string | undefined {
+    return this._session?.token;
+  }
+
+  // The token goes out with the first response and with every tab listing; the reminder with the first response only.
+  sessionLines(includeToken: boolean): string[] {
+    if (!this._session)
+      return [];
+    const lines: string[] = [];
+    if (includeToken || !this._sessionAnnounced)
+      lines.push(this._session.token);
+    if (!this._sessionAnnounced && !this._resumed && graceSessions.size)
+      lines.push(kResumeReminder);
+    this._sessionAnnounced = true;
+    return lines;
+  }
+
+  // Takes over the windows of a session whose client went away, under its token, or reopens them
+  // from its record under this session's own token. Returns whether it reopened them.
+  async resumeSession(token: string): Promise<boolean> {
+    if (!this._session)
+      throw new Error('Resume needs --private-tabs');
+    if (liveSessions.has(token))
+      throw new Error(`Session ${token} is in use`);
+    const dir = this.sessionsDir();
+    const parked = takeSession(token);
+    if (parked) {
+      // The old connection goes, its windows stay.
+      await parked.close?.().catch(() => {});
+      const browserContext = await this.ensureBrowserContext();
+      const recorded = new Map(parked.record.tabs.map(tab => [tab.targetId, tab]));
+      let current: Tab | undefined;
+      let adopted = false;
+      for (const page of browserContext.pages()) {
+        const targetId = await this._targetId(browserContext, page);
+        const tab = recorded.get(targetId);
+        if (!tab)
+          continue;
+        this._onPageCreated(page, undefined, targetId);
+        adopted = true;
+        if (tab.current)
+          current = Tab.forPage(page);
+      }
+      if (adopted) {
+        liveSessions.delete(this._session.token);
+        await deleteRecord(dir, this._session.token);
+        this._session = { token, startedAt: parked.record.startedAt };
+        liveSessions.add(token);
+        this._resumed = true;
+        if (current)
+          this._setCurrentTab(current);
+        return false;
+      }
+    }
+    const record = await readRecord(dir, token);
+    if (!record)
+      throw new Error(`Nothing to resume for ${token}`);
+    let current: Tab | undefined;
+    for (const recorded of record.tabs) {
+      const tab = await this.newTab();
+      await tab.checkUrlAndNavigate(recorded.url);
+      if (recorded.current)
+        current = tab;
+    }
+    if (current)
+      this._setCurrentTab(current);
+    await deleteRecord(dir, token);
+    this._resumed = true;
+    return true;
+  }
+
+  sessionsDir(): string {
+    return sessionsDir(outputDir(this.options));
+  }
+
+  private _scheduleRecord() {
+    if (!this._session)
+      return;
+    clearTimeout(this._recordTimer);
+    this._recordTimer = setTimeout(() => this._writeRecord().catch(e => debug('pw:tools:error')(e)), 1000);
+  }
+
+  private async _writeRecord(endedAt?: string): Promise<SessionRecord> {
+    this._recordTimer = undefined;
+    const tabs = this._tabs.filter(tab => !tab.isolatedContext);
+    const record: SessionRecord = {
+      token: this._session!.token,
+      clientName: this.options.clientName,
+      startedAt: this._session!.startedAt,
+      updatedAt: new Date().toISOString(),
+      endedAt,
+      tabs: await Promise.all(tabs.map(async tab => ({
+        url: tab.page.url(),
+        title: await tab.title().catch(() => ''),
+        targetId: tab.targetId!,
+        current: tab === this._currentTab,
+      }))),
+    };
+    await writeRecord(this.sessionsDir(), record);
+    return record;
   }
 
   drainPendingUnhandledRejections(): unknown[] {
@@ -220,8 +363,9 @@ export class Context {
     const browserContext = await this.ensureBrowserContext(isolatedContext);
     let page: playwrightTypes.Page;
     if (this._hasPrivateTabs(isolatedContext)) {
-      page = await this._newWindowPage(browserContext);
-      this._onPageCreated(page, isolatedContext);
+      const created = await this._newWindowPage(browserContext);
+      page = created.page;
+      this._onPageCreated(page, isolatedContext, created.targetId);
     } else {
       page = await browserContext.newPage();
     }
@@ -381,12 +525,19 @@ export class Context {
     }
   }
 
-  private _onPageCreated(page: playwrightTypes.Page, isolatedContext: string | undefined) {
-    const tab = new Tab(this, page, isolatedContext, tab => this._onPageClosed(tab));
+  private _onPageCreated(page: playwrightTypes.Page, isolatedContext: string | undefined, targetId?: string) {
+    const tab = new Tab(this, page, isolatedContext, tab => this._onPageClosed(tab), targetId);
     this._tabs.push(tab);
     if (!this._currentTab)
       this._setCurrentTab(tab);
     this._startPageVideo(page).catch(() => {});
+    if (this._session && !isolatedContext) {
+      this._disposables.push(eventsHelper.addEventListener(page, 'framenavigated', frame => {
+        if (frame === page.mainFrame())
+          this._scheduleRecord();
+      }));
+      this._scheduleRecord();
+    }
   }
 
   private _onPageClosed(tab: Tab) {
@@ -397,6 +548,7 @@ export class Context {
 
     if (this._currentTab === tab)
       this._setCurrentTab(this._tabs[Math.min(index, this._tabs.length - 1)]);
+    this._scheduleRecord();
   }
 
   currentWebMCPTools(): WebMCPToolDefinition[] {
@@ -516,11 +668,11 @@ export class Context {
   private async _adoptPopup(page: playwrightTypes.Page, isolatedContext: string | undefined) {
     const opener = await page.opener().catch(() => null);
     if (opener && this._tabs.some(tab => tab.page === opener))
-      this._onPageCreated(page, isolatedContext);
+      this._onPageCreated(page, isolatedContext, await this._targetId(page.context(), page));
   }
 
   // A window of its own, so bringing this tab to the front does not hide another client's tab in a shared window.
-  private async _newWindowPage(browserContext: playwrightTypes.BrowserContext): Promise<playwrightTypes.Page> {
+  private async _newWindowPage(browserContext: playwrightTypes.BrowserContext): Promise<{ page: playwrightTypes.Page, targetId: string }> {
     const browser = browserContext.browser();
     if (!browser)
       throw new Error('Private tabs are not supported for this browser.');
@@ -538,7 +690,7 @@ export class Context {
             continue;
           seen.add(page);
           if (await this._targetId(browserContext, page) === targetId)
-            return page;
+            return { page, targetId };
         }
         await nextPage;
       } finally {
@@ -614,14 +766,14 @@ function originOrHostGlob(originOrHost: string) {
   return `*://${originOrHost}/**`;
 }
 
-export async function workspaceFile(options: ContextOptions, fileName: string, perCallWorkspaceDir?: string): Promise<string> {
+export async function workspaceFile(options: FileOptions, fileName: string, perCallWorkspaceDir?: string): Promise<string> {
   const workspace = perCallWorkspaceDir ?? options.cwd;
   const resolvedName = path.resolve(workspace, fileName);
   await checkFile(options, resolvedName, { origin: 'llm' });
   return resolvedName;
 }
 
-export function outputDir(options: ContextOptions): string {
+export function outputDir(options: FileOptions): string {
   if (options.config.outputDir)
     return path.resolve(options.config.outputDir);
   const baseName = options.config.skillMode ? '.playwright-cli' : '.playwright-mcp';
@@ -630,7 +782,7 @@ export function outputDir(options: ContextOptions): string {
   return path.join(options.cwd, baseName);
 }
 
-export async function outputFile(options: ContextOptions, fileName: string, flags: { origin: 'code' | 'llm' }): Promise<string> {
+export async function outputFile(options: FileOptions, fileName: string, flags: { origin: 'code' | 'llm' }): Promise<string> {
   const resolvedFile = path.resolve(outputDir(options), fileName);
   await checkFile(options, resolvedFile, flags);
   await fs.promises.mkdir(path.dirname(resolvedFile), { recursive: true });
@@ -638,7 +790,7 @@ export async function outputFile(options: ContextOptions, fileName: string, flag
   return resolvedFile;
 }
 
-async function checkFile(options: ContextOptions, resolvedFilename: string, flags: { origin: 'code' | 'llm' }) {
+async function checkFile(options: FileOptions, resolvedFilename: string, flags: { origin: 'code' | 'llm' }) {
   // Trust code and unrestricted file access.
   if (flags.origin === 'code' || options.config.allowUnrestrictedFileAccess || options.config.skillMode)
     return;

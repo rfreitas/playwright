@@ -37,7 +37,7 @@ import runCode from './runCode';
 import snapshot from './snapshot';
 import screenshot from './screenshot';
 import storage from './storage';
-import tabs from './tabs';
+import tabs, { browserSessions } from './tabs';
 import tracing from './tracing';
 import verify from './verify';
 import video from './video';
@@ -80,8 +80,9 @@ export const browserTools: Tool<any>[] = [
   ...webstorage,
 ];
 
-export function filteredTools(config: Pick<ContextConfig, 'capabilities'>) {
-  return browserTools.filter(tool => tool.capability.startsWith('core') || config.capabilities?.includes(tool.capability)).filter(tool => !tool.skillOnly).map(tool => ({
+export function filteredTools(config: Pick<ContextConfig, 'capabilities' | 'privateTabs'>) {
+  // Sessions exist with private tabs only.
+  return browserTools.filter(tool => tool.capability.startsWith('core') || config.capabilities?.includes(tool.capability)).filter(tool => !tool.skillOnly && (tool !== browserSessions || config.privateTabs)).map(tool => ({
     ...tool,
     schema: {
       ...tool.schema,

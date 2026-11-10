@@ -69,6 +69,7 @@ export type CLIOptions = {
   port?: number;
   privateTabs?: boolean;
   profileDirName?: string;
+  resumeGrace?: number;
   proxyBypass?: string;
   proxyServer?: string;
   redactUrlParams?: string[];
@@ -395,6 +396,7 @@ function configFromCLIOptions(cliOptions: CLIOptions): Config & { configFile?: s
     redactUrlParams: cliOptions.redactUrlParams,
     sharedBrowserContext: cliOptions.sharedBrowserContext,
     privateTabs: cliOptions.privateTabs,
+    resumeGrace: cliOptions.resumeGrace,
     snapshot: cliOptions.snapshotMode || cliOptions.snapshotBoxes !== undefined ? { mode: cliOptions.snapshotMode, boxes: cliOptions.snapshotBoxes } : undefined,
     outputDir: cliOptions.outputDir,
     outputMaxSize: cliOptions.outputMaxSize,

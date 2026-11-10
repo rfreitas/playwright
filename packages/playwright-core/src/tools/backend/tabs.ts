@@ -17,6 +17,7 @@
 import * as z from 'zod';
 import { defineTool } from './tool';
 import { renderTabsMarkdown } from './response';
+import { graceSessions, liveSessions, readRecords } from './sessions';
 
 const browserTabs = defineTool({
   capability: 'core-tabs',
@@ -24,12 +25,13 @@ const browserTabs = defineTool({
   schema: {
     name: 'browser_tabs',
     title: 'Manage tabs',
-    description: 'List, create, close, or select a browser tab.',
+    description: 'List, create, close, or select a browser tab, or resume the tabs of an earlier session.',
     inputSchema: z.object({
-      action: z.enum(['list', 'new', 'close', 'select']).describe('Operation to perform'),
+      action: z.enum(['list', 'new', 'close', 'select', 'resume']).describe('Operation to perform'),
       index: z.number().optional().describe('Tab index, used for close/select. If omitted for close, current tab is closed.'),
       url: z.string().optional().describe('URL to navigate to in the new tab, used for new.'),
       isolatedContext: z.string().optional().describe('Name of an isolated browser context to create the new tab in, used for new. Tabs in the same isolated context share cookies and storage, tabs in different contexts are fully isolated. If omitted or "default", the tab is created in the default context.'),
+      token: z.string().optional().describe('Session token, used for resume. The tabs of that session, as listed by browser_sessions, become this session\'s tabs.'),
     }),
     type: 'action',
   },
@@ -38,6 +40,7 @@ const browserTabs = defineTool({
     switch (params.action) {
       case 'list': {
         await context.ensureTab();
+        response.setIncludeSession();
         break;
       }
       case 'new': {
@@ -59,6 +62,13 @@ const browserTabs = defineTool({
         await context.selectTab(params.index);
         break;
       }
+      case 'resume': {
+        if (!params.token)
+          throw new Error('Session token is required');
+        if (await context.resumeSession(params.token))
+          response.addTextResult(`Reopened from record; this session is ${context.sessionToken()}`);
+        break;
+      }
     }
     const tabHeaders = await Promise.all(context.tabs().map(tab => tab.headerSnapshot()));
     const result = renderTabsMarkdown(tabHeaders);
@@ -66,6 +76,31 @@ const browserTabs = defineTool({
   },
 });
 
+export const browserSessions = defineTool({
+  capability: 'core-tabs',
+
+  schema: {
+    name: 'browser_sessions',
+    title: 'List sessions',
+    description: 'List the sessions of this server, newest first: live ones, ones whose client disconnected and whose tabs are still open for browser_tabs resume, and closed ones.',
+    inputSchema: z.object({}),
+    type: 'readOnly',
+  },
+
+  handle: async (context, params, response) => {
+    const lines: string[] = [];
+    for (const record of await readRecords(context.sessionsDir())) {
+      const grace = graceSessions.get(record.token);
+      const state = liveSessions.has(record.token) ? 'live' : grace ? `grace until ${new Date(grace.closeAt).toISOString()}` : `closed ${record.updatedAt}`;
+      lines.push(`- ${record.token} ${state} (${record.clientName})`);
+      for (const tab of record.tabs)
+        lines.push(`  - ${tab.url}`);
+    }
+    response.addTextResult(lines.length ? lines.join('\n') : 'No sessions');
+  },
+});
+
 export default [
   browserTabs,
+  browserSessions,
 ];

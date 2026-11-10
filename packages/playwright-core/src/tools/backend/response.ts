@@ -23,6 +23,7 @@ import { renderModalStates } from './tab';
 import { renderWebMCPToolsYaml, webmcpToolsJSON } from './webmcp';
 
 import { outputDir as resolveOutputDir } from './context';
+import { sessionsDir } from './sessions';
 
 import type * as playwright from '../../..';
 import type * as actions from '@isomorphic/codegen/actions';
@@ -59,6 +60,7 @@ export class Response {
   private _includeSnapshotRoot: playwright.Locator | undefined;
   private _includeSnapshotDepth: number | undefined;
   private _includeSnapshotBoxes: boolean | undefined;
+  private _includeSession = false;
   private _isClose: boolean = false;
 
   readonly toolName: string;
@@ -142,6 +144,10 @@ export class Response {
 
   setClose() {
     this._isClose = true;
+  }
+
+  setIncludeSession() {
+    this._includeSession = true;
   }
 
   addError(error: string) {
@@ -240,7 +246,9 @@ export class Response {
     const dir = resolveOutputDir(this._context.options);
     let entries: { path: string, size: number, mtimeMs: number }[];
     try {
-      entries = await listFilesRecursive(dir);
+      // Session records are not output; they stay until their own retention ends.
+      const sessions = sessionsDir(dir) + path.sep;
+      entries = (await listFilesRecursive(dir)).filter(entry => !entry.path.startsWith(sessions));
     } catch {
       return;
     }
@@ -277,6 +285,10 @@ export class Response {
 
     if (this._results.length)
       addSection('Result', this._results);
+
+    const sessionLines = this._context.sessionLines(this._includeSession);
+    if (sessionLines.length)
+      addSection('Session', sessionLines);
 
     // Code
     const codegen = this._context.config.codegen ?? 'typescript';

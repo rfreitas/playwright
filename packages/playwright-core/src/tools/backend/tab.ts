@@ -106,6 +106,8 @@ export class Tab extends EventEmitter<TabEventsInterface> {
   readonly context: Context;
   readonly page: playwright.Page;
   readonly isolatedContext: string | undefined;
+  // The CDP target id, known for private tabs; it is what another connection finds the page by.
+  readonly targetId: string | undefined;
   private _lastHeader: TabHeader = { title: 'about:blank', url: 'about:blank', current: false, crashed: false, console: { total: 0, warnings: 0, errors: 0 } };
   private _downloads: Download[] = [];
   private _requests: RequestEntry[] = [];
@@ -124,11 +126,12 @@ export class Tab extends EventEmitter<TabEventsInterface> {
   readonly navigationTimeoutOptions: { timeout?: number; };
   readonly expectTimeoutOptions: { timeout?: number; };
 
-  constructor(context: Context, page: playwright.Page, isolatedContext: string | undefined, onPageClose: (tab: Tab) => void) {
+  constructor(context: Context, page: playwright.Page, isolatedContext: string | undefined, onPageClose: (tab: Tab) => void, targetId?: string) {
     super();
     this.context = context;
     this.page = page;
     this.isolatedContext = isolatedContext;
+    this.targetId = targetId;
     this._onPageClose = onPageClose;
     const p = page;
     this._disposables = [
@@ -346,6 +349,15 @@ export class Tab extends EventEmitter<TabEventsInterface> {
 
   isCurrentTab(): boolean {
     return this === this.context.currentTab();
+  }
+
+  // Empty while a dialog holds the page, which would otherwise block the call.
+  async title(): Promise<string> {
+    let title = '';
+    await this._raceAgainstModalStates(async () => {
+      title = await this.page.title();
+    });
+    return title;
   }
 
   async waitForLoadState(state: 'load', options?: { timeout?: number }): Promise<void> {

@@ -70,7 +70,9 @@ export class BrowserBackend extends EventEmitter<{ disconnected: [], dynamictool
       config: this._config,
       sessionLog: this._sessionLog,
       cwd: clientInfo.cwd,
+      clientName: clientInfo.clientName,
       onWebMCPToolsChanged: () => this.emit('dynamictoolschange'),
+      closeBrowser: this._disposeCallback,
     });
   }
 
@@ -82,8 +84,8 @@ export class BrowserBackend extends EventEmitter<{ disconnected: [], dynamictool
     if (this._disposed)
       return;
     this._disposed = true;
+    // The context closes the browser connection, now or when its resume grace ends.
     await this._context?.dispose().catch(e => debug('pw:tools:error')(e));
-    await this._disposeCallback?.().catch(e => debug('pw:tools:error')(e));
   }
 
   async callTool(name: string, rawArguments: mcpServer.CallToolRequest['params']['arguments'] & { _meta?: Record<string, any> } = {}, signal?: AbortSignal): Promise<mcpServer.CallToolResult> {

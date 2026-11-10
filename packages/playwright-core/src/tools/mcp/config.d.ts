@@ -160,6 +160,13 @@ export type Config = {
   privateTabs?: boolean;
 
   /**
+   * With `privateTabs` on an HTTP server, how long in milliseconds the tabs of a client that disconnected
+   * stay open, so that a client can take them over with `browser_tabs` `resume`. Defaults to 30 minutes,
+   * 0 closes them at once.
+   */
+  resumeGrace?: number;
+
+  /**
    * Secrets are used to replace matching plain text in the tool responses to prevent the LLM
    * from accidentally getting sensitive data. It is a convenience and not a security feature,
    * make sure to always examine information coming in and from the tool on the client.

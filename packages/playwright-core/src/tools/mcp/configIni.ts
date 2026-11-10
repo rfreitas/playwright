@@ -160,6 +160,7 @@ const longhandTypes: Record<string, LonghandType> = {
   'saveVideo': 'size',
   'sharedBrowserContext': 'boolean',
   'privateTabs': 'boolean',
+  'resumeGrace': 'number',
   'outputDir': 'string',
   'outputMaxSize': 'number',
   'imageResponses': 'string',
