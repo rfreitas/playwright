@@ -22,6 +22,7 @@ import debug from 'debug';
 import { escapeRegExp, escapeWithQuotes } from '@isomorphic/stringUtils';
 import { disposeAll } from '@isomorphic/disposable';
 import { eventsHelper } from '@utils/eventsHelper';
+import { gracefullyCloseSet } from '@utils/processLauncher';
 import { isPathInside, isSystemDirectory, isWritable, resolveSymlinks, sanitizeForFilePath } from '@utils/fileUtils';
 import { playwright } from '../../inprocess';
 
@@ -55,6 +56,7 @@ export type ContextConfig = {
   secrets?: Record<string, string>;
   redactUrlParams?: string[];
   sharedBrowserContext?: boolean;
+  privateTabs?: boolean;
   snapshot?: {
     mode?: 'full' | 'none';
     boxes?: boolean;
@@ -116,6 +118,7 @@ export class Context {
   private _browserContexts = new Map<string | undefined, Promise<playwrightTypes.BrowserContext>>();
   private _tabs: Tab[] = [];
   private _currentTab: Tab | undefined;
+  private _browserSession: Promise<playwrightTypes.CDPSession> | undefined;
   private _routes: RouteEntry[] = [];
   private _video: {
     params: VideoParams;
@@ -158,13 +161,24 @@ export class Context {
       this._redactUrlParamsRegex = new RegExp(`([?&#](?:${redactUrlParams.map(escapeRegExp).join('|')})=)[^&#\\s"'<>()\\[\\]\`\\\\]+`, 'gi');
     testDebug('create context');
     process.on('unhandledRejection', this._onUnhandledRejection);
+    // A stdio client that goes away ends the process through the exit watchdog, not through dispose().
+    if (this.config.privateTabs)
+      gracefullyCloseSet.add(this._closeOwnTabs);
   }
+
+  private _closeOwnTabs = async () => {
+    await Promise.all(this._tabs.filter(tab => !tab.isolatedContext).map(tab => tab.page.close().catch(() => {})));
+  };
 
   async dispose() {
     process.off('unhandledRejection', this._onUnhandledRejection);
     await this.stopRecording();
     await this.stopVideoRecording();
     await disposeAll(this._disposables);
+    if (this.config.privateTabs) {
+      gracefullyCloseSet.delete(this._closeOwnTabs);
+      await this._closeOwnTabs();
+    }
     for (const tab of this._tabs)
       await tab.dispose();
     this._tabs.length = 0;
@@ -204,7 +218,13 @@ export class Context {
 
   async newTab(isolatedContext?: string): Promise<Tab> {
     const browserContext = await this.ensureBrowserContext(isolatedContext);
-    const page = await browserContext.newPage();
+    let page: playwrightTypes.Page;
+    if (this._hasPrivateTabs(isolatedContext)) {
+      page = await this._newWindowPage(browserContext);
+      this._onPageCreated(page, isolatedContext);
+    } else {
+      page = await browserContext.newPage();
+    }
     this._setCurrentTab(this._tabs.find(t => t.page === page)!);
     return this._currentTab!;
   }
@@ -476,11 +496,64 @@ export class Context {
     for (const route of this._routes)
       await browserContext.route(route.pattern, route.handler);
 
-    for (const page of browserContext.pages())
-      this._onPageCreated(page, isolatedContext);
-    disposables.push(eventsHelper.addEventListener(browserContext, 'page', page => this._onPageCreated(page, isolatedContext)));
+    if (this._hasPrivateTabs(isolatedContext)) {
+      // Other clients' tabs are not ours; only popups from our own tabs join them.
+      disposables.push(eventsHelper.addEventListener(browserContext, 'page', page => this._adoptPopup(page, isolatedContext)));
+    } else {
+      for (const page of browserContext.pages())
+        this._onPageCreated(page, isolatedContext);
+      disposables.push(eventsHelper.addEventListener(browserContext, 'page', page => this._onPageCreated(page, isolatedContext)));
+    }
     await this._startContextTracing(isolatedContext, browserContext);
     return browserContext;
+  }
+
+  // Isolated contexts belong to this client alone, so private tabs only concern the shared default context.
+  private _hasPrivateTabs(isolatedContext: string | undefined) {
+    return !!this.config.privateTabs && !isolatedContext;
+  }
+
+  private async _adoptPopup(page: playwrightTypes.Page, isolatedContext: string | undefined) {
+    const opener = await page.opener().catch(() => null);
+    if (opener && this._tabs.some(tab => tab.page === opener))
+      this._onPageCreated(page, isolatedContext);
+  }
+
+  // A window of its own, so bringing this tab to the front does not hide another client's tab in a shared window.
+  private async _newWindowPage(browserContext: playwrightTypes.BrowserContext): Promise<playwrightTypes.Page> {
+    const browser = browserContext.browser();
+    if (!browser)
+      throw new Error('Private tabs are not supported for this browser.');
+    this._browserSession ??= browser.newBrowserCDPSession();
+    const session = await this._browserSession;
+    const seen = new Set(browserContext.pages());
+    const { targetId } = await session.send('Target.createTarget', { url: 'about:blank', newWindow: true });
+    for (;;) {
+      let onPage!: () => void;
+      const nextPage = new Promise<void>(resolve => onPage = resolve);
+      const listener = eventsHelper.addEventListener(browserContext, 'page', onPage);
+      try {
+        for (const page of browserContext.pages()) {
+          if (seen.has(page))
+            continue;
+          seen.add(page);
+          if (await this._targetId(browserContext, page) === targetId)
+            return page;
+        }
+        await nextPage;
+      } finally {
+        eventsHelper.removeEventListeners([listener]);
+      }
+    }
+  }
+
+  private async _targetId(browserContext: playwrightTypes.BrowserContext, page: playwrightTypes.Page): Promise<string> {
+    const session = await browserContext.newCDPSession(page);
+    try {
+      return (await session.send('Target.getTargetInfo')).targetInfo.targetId;
+    } finally {
+      await session.detach().catch(() => {});
+    }
   }
 
   private async _createIsolatedContext(name: string): Promise<playwrightTypes.BrowserContext> {

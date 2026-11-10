@@ -153,6 +153,13 @@ export type Config = {
   sharedBrowserContext?: boolean;
 
   /**
+   * In a browser shared with other clients, such as one attached over `cdpEndpoint`, see only the tabs
+   * this client opened, each in its own window, and close them when the client disconnects.
+   * Cookies and storage are still shared.
+   */
+  privateTabs?: boolean;
+
+  /**
    * Secrets are used to replace matching plain text in the tool responses to prevent the LLM
    * from accidentally getting sensitive data. It is a convenience and not a security feature,
    * make sure to always examine information coming in and from the tool on the client.

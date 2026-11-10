@@ -184,6 +184,10 @@ Playwright MCP supports three profile modes:
 -   **Isolated**: Each session starts fresh. Pass `--isolated` to enable. You can load initial state with `--storage-state`.
 -   **Browser extension**: Connect to your existing browser tabs with the [Playwright Extension](https://github.com/microsoft/playwright/blob/main/packages/extension/README.md). Pass `--extension` to enable.
 
+### Private tabs in a shared browser
+
+A browser attached over `--cdp-endpoint` is often shared by several clients, so that they all use its logins. By default every client sees every tab, and one client can act on or close another client's tab. Pass `--private-tabs` to give each client its own tabs: it lists only the tabs it opened, and the popups they open; each of its tabs opens in a window of its own, so bringing it to the front does not hide another client's tab; and its tabs are closed when the client disconnects. Cookies and storage are still shared, since it is the same profile.
+
 ### Idle timeout
 
 A page that keeps animating or rendering costs CPU for as long as the browser is open, and an agent session can last hours. A headless browser launched by the server is therefore closed after an hour without tool calls. Headed browsers, and browsers attached over `--cdp-endpoint` or `--extension`, are never closed automatically. Pass `--idle-timeout` to set the timeout in milliseconds for any mode, or `0` to disable it:

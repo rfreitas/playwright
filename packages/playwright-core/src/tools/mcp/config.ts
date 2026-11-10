@@ -67,6 +67,7 @@ export type CLIOptions = {
   outputDir?: string;
   outputMaxSize?: number;
   port?: number;
+  privateTabs?: boolean;
   profileDirName?: string;
   proxyBypass?: string;
   proxyServer?: string;
@@ -393,6 +394,7 @@ function configFromCLIOptions(cliOptions: CLIOptions): Config & { configFile?: s
     secrets: cliOptions.secrets,
     redactUrlParams: cliOptions.redactUrlParams,
     sharedBrowserContext: cliOptions.sharedBrowserContext,
+    privateTabs: cliOptions.privateTabs,
     snapshot: cliOptions.snapshotMode || cliOptions.snapshotBoxes !== undefined ? { mode: cliOptions.snapshotMode, boxes: cliOptions.snapshotBoxes } : undefined,
     outputDir: cliOptions.outputDir,
     outputMaxSize: cliOptions.outputMaxSize,
