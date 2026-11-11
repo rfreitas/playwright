@@ -236,10 +236,22 @@ test('grace cap: an over-cap park evicts the oldest but keeps its record to reop
   await expect.poll(() => browserContext.pages().map(p => p.url())).not.toContain(server.PREFIX + '/a');
   expect(browserContext.pages().map(p => p.url())).toEqual(expect.arrayContaining([server.PREFIX + '/b', server.PREFIX + '/b2']));
 
+  // W alone has more windows than the cap: it is not parked, so it costs B nothing, and its record stays.
+  const w = await connect(endpoint, 'client-w');
+  const tokenW = tokenOf(await w.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/w' } }));
+  for (const u of ['/w2', '/w3'])
+    await w.client.callTool({ name: 'browser_tabs', arguments: { action: 'new', url: server.PREFIX + u } });
+  await expect.poll(async () => (await readRecordAt(outputDir, tokenW))?.tabs.length).toBe(3);
+  await w.transport.terminateSession();
+  await w.client.close();
+  await expect.poll(() => browserContext.pages().map(p => p.url()).filter(u => u.startsWith(server.PREFIX + '/w'))).toEqual([]);
+  expect(browserContext.pages().map(p => p.url())).toEqual(expect.arrayContaining([server.PREFIX + '/b', server.PREFIX + '/b2']));
+
   const c = await connect(endpoint, 'client-c');
   const sessions = text(await c.client.callTool({ name: 'browser_sessions', arguments: {} }));
   expect(sessions).toContain(`${tokenA} closed`);
   expect(sessions).toContain(`${tokenB} grace until`);
+  expect(sessions).toContain(`${tokenW} closed`);
   // Eviction kept A's record, so it reopens from the record under a new token.
   expect(await readRecordAt(outputDir, tokenA)).toEqual(expect.objectContaining({ token: tokenA }));
   const resumed = text(await c.client.callTool({ name: 'browser_tabs', arguments: { action: 'resume', token: tokenA } }));

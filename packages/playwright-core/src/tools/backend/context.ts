@@ -229,8 +229,7 @@ export class Context {
     if (!grace || !this._defaultBrowserContext.browser()?.isConnected())
       return false;
     await this._closeBlankTabs();
-    parkSession(record, tabs.map(tab => tab.page), grace, this.options.closeBrowser);
-    return true;
+    return parkSession(record, tabs.map(tab => tab.page), grace, this.options.closeBrowser);
   }
 
   // What a session is about, and so what its record and its grace keep: the tabs in the shared context that show a page.

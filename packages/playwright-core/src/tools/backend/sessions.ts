@@ -119,10 +119,17 @@ function readMeminfo(): { limit: number, usage: number } | undefined {
   return undefined;
 }
 
-export function parkSession(record: SessionRecord, pages: playwright.Page[], graceMs: number, close: (() => Promise<void>) | undefined) {
+// Returns whether it parked the windows. A session with more windows than the cap is not parked, so that it
+// does not evict everyone else; its record stays for browser_tabs resume.
+export function parkSession(record: SessionRecord, pages: playwright.Page[], graceMs: number, close: (() => Promise<void>) | undefined): boolean {
+  if (graceMax > 0 && pages.length > graceMax) {
+    log(`not parking ${record.token}: ${pages.length} windows over cap ${graceMax}`);
+    return false;
+  }
   const timer = setTimeout(() => void evictGraceSession(record.token), graceMs);
   graceSessions.set(record.token, { pages, record, closeAt: Date.now() + graceMs, timer, close });
   enforceGraceLimits(record.token);
+  return true;
 }
 
 // Closes a parked session as its grace timer would on expiry: drop it from the registry and close its

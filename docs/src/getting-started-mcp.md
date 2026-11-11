@@ -190,7 +190,7 @@ A browser attached over `--cdp-endpoint` is often shared by several clients, so 
 
 Each private-tabs session has a token, shown in its first response and by `browser_tabs` `list`, and a record of its tabs under `sessions/` in the output directory. On an HTTP server the tabs of a client that disconnected stay open for a grace period, `--resume-grace` in milliseconds, 30 minutes by default; `browser_tabs` `resume` with the token takes them over, or reopens them from the record once they are gone. `browser_sessions` lists the sessions and their state. A record keeps its URLs redacted by `--redact-url-params`, so a tab reopened from it loads without those parameters.
 
-To protect a small machine, `--resume-grace-max` caps how many windows of disconnected sessions stay open at once, and parking also closes the oldest open sessions when the container is near its memory limit; a closed session keeps its record, so `browser_tabs` `resume` still reopens it. The cap defaults to a value from the container memory limit, and `0` removes the count cap but keeps the memory one.
+To protect a small machine, `--resume-grace-max` caps how many windows of disconnected sessions stay open at once (a session with more windows than that is closed at once), and parking also closes the oldest open sessions when the container is near its memory limit; a closed session keeps its record, so `browser_tabs` `resume` still reopens it. The cap defaults to a value from the container memory limit, and `0` removes the count cap but keeps the memory one.
 
 ### Idle timeout
 
