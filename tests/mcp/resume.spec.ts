@@ -172,6 +172,16 @@ test('records: a closed session reopens from its record, and resume refuses what
   expect(text(await e.client.callTool({ name: 'browser_tabs', arguments: { action: 'resume', token: newToken } }))).toContain(`Session ${newToken} is in use`);
   expect(text(await e.client.callTool({ name: 'browser_tabs', arguments: { action: 'resume', token: 'deadbeefdeadbeefdeadbeef' } }))).toContain('Nothing to resume for deadbeefdeadbeefdeadbeef');
 
+  // File tools can neither write nor read records, which hold the tokens and URLs of other clients; the rest of the output directory works.
+  server.setContent('/drop', '<button>drop</button>', 'text/html');
+  await e.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/drop' } });
+  const planted = path.join(outputDir, 'sessions', 'planted.json');
+  expect(text(await e.client.callTool({ name: 'browser_evaluate', arguments: { function: '() => ({ token: "planted" })', filename: planted } }))).toContain('File access denied');
+  expect(fs.existsSync(planted)).toBe(false);
+  expect(text(await e.client.callTool({ name: 'browser_drop', arguments: { element: 'button', target: 'e2', paths: [recordFile(newToken)] } }))).toContain('File access denied');
+  await e.client.callTool({ name: 'browser_evaluate', arguments: { function: '() => 1', filename: path.join(outputDir, 'result.json') } });
+  expect(fs.readFileSync(path.join(outputDir, 'result.json'), 'utf-8')).toBe('1');
+
   // The server restarts: its clients' tabs close with it, and the live session's record reopens on the next server.
   await new Promise(f => { first.process.once('exit', f); first.process.kill('SIGTERM'); });
   await expect.poll(() => browserContext.pages().map(p => p.url())).not.toContain(server.PREFIX + '/a');

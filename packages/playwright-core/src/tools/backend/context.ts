@@ -824,12 +824,17 @@ async function checkFile(options: ContextOptions, resolvedFilename: string, flag
   // Trust llm to use valid characters in file names.
   const output = outputDir(options);
   const workspace = options.cwd;
+  const sessions = sessionsDir(output);
   // Follow symlinks, an unresolvable root cannot be traversed anyway.
-  const [realOutput, realWorkspace, realFilename] = await Promise.all([
+  const [realOutput, realWorkspace, realSessions, realFilename] = await Promise.all([
     resolveSymlinks(output).catch(() => output),
     resolveSymlinks(workspace).catch(() => workspace),
+    resolveSymlinks(sessions).catch(() => sessions),
     resolveSymlinks(resolvedFilename),
   ]);
   if (!isPathInside(realOutput, realFilename) && !isPathInside(realWorkspace, realFilename))
     throw new Error(`File access denied: ${resolvedFilename} is outside allowed roots. Allowed roots: ${output}, ${workspace}`);
+  // Session records hold other clients' tokens and URLs, and other clients trust what they read there.
+  if (isPathInside(realSessions, realFilename))
+    throw new Error(`File access denied: ${resolvedFilename} is in the session records directory ${sessions}`);
 }
