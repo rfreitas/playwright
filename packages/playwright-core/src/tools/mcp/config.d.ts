@@ -156,7 +156,7 @@ export type Config = {
    * In a browser shared with other clients, such as one attached over `cdpEndpoint`, see only the tabs
    * this client opened, each in its own window, and close them when the client disconnects.
    * Cookies and storage are still shared. `browser_run_code_unsafe` is not offered, since its code runs
-   * in the server process and could reach every client's tabs.
+   * in the server process and could reach every client's tabs. Implies `ignoreRoots`.
    */
   privateTabs?: boolean;
 

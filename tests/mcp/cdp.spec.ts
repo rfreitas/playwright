@@ -15,6 +15,10 @@
  */
 
 import { spawnSync } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import { pathToFileURL } from 'url';
+
 import { test, expect, mcpServerPath } from './fixtures';
 
 test.describe.configure({
@@ -216,7 +220,12 @@ test('private tabs: each client has its own tabs in its own window, and they sha
   await existing.evaluate(() => { localStorage.setItem('who', 'shared'); document.cookie = 'who=shared'; });
   const args = [`--cdp-endpoint=${cdpServer.endpoint}`, '--private-tabs'];
 
-  const { client: a } = await startClient({ args });
+  // A's client advertises a root of its own; private tabs do not take it as a workspace.
+  const elsewhere = test.info().outputPath('elsewhere');
+  const cwd = test.info().outputPath('cwd');
+  await fs.promises.mkdir(elsewhere, { recursive: true });
+  await fs.promises.mkdir(cwd, { recursive: true });
+  const { client: a } = await startClient({ args, cwd, roots: [{ name: 'elsewhere', uri: pathToFileURL(elsewhere).toString() }] });
   const { client: b } = await startClient({ args });
   await a.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/a' } });
   await b.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/b' } });
@@ -250,6 +259,12 @@ test('private tabs: each client has its own tabs in its own window, and they sha
   await a.callTool({ name: 'browser_evaluate', arguments: { function: `() => window.open('${server.PREFIX}/popup')` } });
   await expect.poll(async () => (await a.callTool({ name: 'browser_tabs', arguments: { action: 'list' } })).content[0].text).toContain('popup');
   expect((await b.callTool({ name: 'browser_tabs', arguments: { action: 'list' } })).content[0].text).not.toContain('popup');
+
+  expect(await a.callTool({ name: 'browser_console_messages', arguments: { filename: path.join(elsewhere, '.bashrc') } })).toHaveResponse({
+    error: expect.stringContaining('File access denied'),
+    isError: true,
+  });
+  expect(fs.readdirSync(elsewhere)).toEqual([]);
 
   // Code run in the server process would reach every client's tabs, so that tool is not offered.
   expect((await a.listTools()).tools.map(t => t.name)).not.toContain('browser_run_code_unsafe');

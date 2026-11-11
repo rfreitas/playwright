@@ -68,7 +68,7 @@ export function decorateMCPCommand(command: Command) {
       .option('--output-dir <path>', 'path to the directory for automatically named output files, for example a screenshot taken without an explicit file name. Files with an explicit name are resolved against the workspace root instead and are not affected by this option.')
       .option('--output-max-size <bytes>', 'Threshold for evicting old output files, in bytes.', numberParser)
       .option('--port <port>', 'port to listen on for SSE transport.')
-      .option('--private-tabs', 'in a browser shared with other clients, see only the tabs this client opened, each in its own window, and close them when the client disconnects. Also leaves out browser_run_code_unsafe, whose code could reach every tab. For --cdp-endpoint.')
+      .option('--private-tabs', 'in a browser shared with other clients, see only the tabs this client opened, each in its own window, and close them when the client disconnects. Also leaves out browser_run_code_unsafe, whose code could reach every tab, and implies --ignore-roots. For --cdp-endpoint.')
       .option('--profile-dir-name <name>', 'name of the profile directory in the user data dir to connect to with --extension, for example "Profile 1". Defaults to the last used profile that has the extension installed.')
       .option('--proxy-bypass <bypass>', 'comma-separated domains to bypass proxy, for example ".com,chromium.org,.domain.com"')
       .option('--proxy-server <proxy>', 'specify proxy server, for example "http://myproxy:3128", "http://user:password@myproxy:3128" or "socks5://myproxy:8080"')

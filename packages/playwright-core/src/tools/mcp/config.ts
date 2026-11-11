@@ -151,7 +151,9 @@ export async function resolveCLIConfigForMCP(cliOptions: CLIOptions, env?: NodeJ
 
   validateOutputDir(result.outputDir);
 
-  return { ...result, browser, configFile };
+  // Clients that share a browser through private tabs are not trusted with the server's files, so their roots are not workspaces.
+  const ignoreRoots = result.ignoreRoots || result.privateTabs;
+  return { ...result, browser, configFile, ignoreRoots };
 }
 
 function validateOutputDir(outputDir: string | undefined) {
