@@ -82,7 +82,7 @@ export const browserSessions = defineTool({
   schema: {
     name: 'browser_sessions',
     title: 'List sessions',
-    description: 'List the sessions of this server, newest first: live ones, ones whose client disconnected and whose tabs are still open for browser_tabs resume, and closed ones.',
+    description: 'List the sessions of this server, newest first: live ones, ones in grace, whose client disconnected and whose tabs are still open, and closed ones, whose tabs are recorded. browser_tabs resume with a session\'s token takes over the tabs of one in grace and reopens the tabs of a closed one.',
     inputSchema: z.object({}),
     type: 'readOnly',
   },
@@ -96,6 +96,8 @@ export const browserSessions = defineTool({
       for (const tab of record.tabs)
         lines.push(`  - ${tab.url}`);
     }
+    if (lines.length)
+      lines.push('browser_tabs resume with a token takes over the tabs of a session in grace, and reopens a closed session\'s tabs from its record.');
     response.addTextResult(lines.length ? lines.join('\n') : 'No sessions');
   },
 });

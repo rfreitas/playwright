@@ -217,16 +217,29 @@ export class Context {
   // connection in the grace registry instead of closing them. Returns whether it parked them.
   private async _endSession(): Promise<boolean> {
     liveSessions.delete(this._session!.token);
-    const pending = this._recordTimer !== undefined;
     clearTimeout(this._recordTimer);
-    if (!this._tabs.length && !pending)
+    const tabs = this._sessionTabs();
+    if (!tabs.length) {
+      // Nothing to come back to: no record, and the caller closes whatever blank tabs there are.
+      await deleteRecord(this.sessionsDir(), this._session!.token);
       return false;
+    }
     const record = await this._writeRecord(new Date().toISOString());
     const grace = this.config.resumeGrace ?? 0;
-    if (!grace || !record.tabs.length || !this._defaultBrowserContext.browser()?.isConnected())
+    if (!grace || !this._defaultBrowserContext.browser()?.isConnected())
       return false;
-    parkSession(record, this._tabs.filter(tab => !tab.isolatedContext).map(tab => tab.page), grace, this.options.closeBrowser);
+    await this._closeBlankTabs();
+    parkSession(record, tabs.map(tab => tab.page), grace, this.options.closeBrowser);
     return true;
+  }
+
+  // What a session is about, and so what its record and its grace keep: the tabs in the shared context that show a page.
+  private _sessionTabs(): Tab[] {
+    return this._tabs.filter(tab => !tab.isolatedContext && tab.page.url() !== 'about:blank');
+  }
+
+  private async _closeBlankTabs() {
+    await Promise.all(this._tabs.filter(tab => !tab.isolatedContext && tab.page.url() === 'about:blank').map(tab => tab.page.close().catch(() => {})));
   }
 
   sessionToken(): string | undefined {
@@ -254,6 +267,9 @@ export class Context {
     if (liveSessions.has(token))
       throw new Error(`Session ${token} is in use`);
     const dir = this.sessionsDir();
+    // A fresh connection has at most the blank tab its first tool call opened; it goes once the real tabs are back.
+    const blanks = this._tabs.filter(tab => !tab.isolatedContext && tab.page.url() === 'about:blank');
+    const closeBlanks = () => Promise.all(blanks.map(tab => tab.page.close().catch(() => {})));
     const parked = takeSession(token);
     if (parked) {
       // The old connection goes, its windows stay.
@@ -278,8 +294,8 @@ export class Context {
         this._session = { token, startedAt: parked.record.startedAt };
         liveSessions.add(token);
         this._resumed = true;
-        if (current)
-          this._setCurrentTab(current);
+        this._setCurrentTab(current ?? this._tabs[this._tabs.length - 1]);
+        await closeBlanks();
         return false;
       }
     }
@@ -293,8 +309,10 @@ export class Context {
       if (recorded.current)
         current = tab;
     }
-    if (current)
-      this._setCurrentTab(current);
+    if (record.tabs.length) {
+      this._setCurrentTab(current ?? this._tabs[this._tabs.length - 1]);
+      await closeBlanks();
+    }
     await deleteRecord(dir, token);
     this._resumed = true;
     return true;
@@ -313,7 +331,7 @@ export class Context {
 
   private async _writeRecord(endedAt?: string): Promise<SessionRecord> {
     this._recordTimer = undefined;
-    const tabs = this._tabs.filter(tab => !tab.isolatedContext);
+    const tabs = this._sessionTabs();
     const record: SessionRecord = {
       token: this._session!.token,
       clientName: this.options.clientName ?? '',
