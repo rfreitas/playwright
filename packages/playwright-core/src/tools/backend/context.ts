@@ -85,14 +85,11 @@ type ContextOptions = {
   config: ContextConfig;
   sessionLog?: SessionLog;
   cwd: string;
-  clientName: string;
+  clientName?: string;
   onWebMCPToolsChanged?: () => void;
   // Closes the browser connection: at dispose, or when the resume grace of a private-tabs session ends.
   closeBrowser?: () => Promise<void>;
 };
-
-// What resolving a file against the workspace or the output directory needs.
-type FileOptions = Pick<ContextOptions, 'config' | 'cwd'>;
 
 export type RouteEntry = {
   pattern: string;
@@ -196,20 +193,23 @@ export class Context {
     await this.stopVideoRecording();
     await disposeAll(this._disposables);
     let closeBrowser = this.options.closeBrowser;
-    if (this.config.privateTabs) {
-      gracefullyCloseSet.delete(this._closeOwnTabs);
-      if (await this._endSession())
-        closeBrowser = undefined;
-      else
-        await this._closeOwnTabs();
+    try {
+      if (this.config.privateTabs) {
+        gracefullyCloseSet.delete(this._closeOwnTabs);
+        if (await this._endSession())
+          closeBrowser = undefined;
+        else
+          await this._closeOwnTabs();
+      }
+      for (const tab of this._tabs)
+        await tab.dispose();
+      this._tabs.length = 0;
+      this._setCurrentTab(undefined);
+      await Promise.all([...this._browserContexts].filter(([isolatedContext]) => isolatedContext).map(([, browserContext]) => browserContext.then(c => c.close()).catch(() => {})));
+      this._browserContexts.clear();
+    } finally {
+      await closeBrowser?.();
     }
-    for (const tab of this._tabs)
-      await tab.dispose();
-    this._tabs.length = 0;
-    this._setCurrentTab(undefined);
-    await Promise.all([...this._browserContexts].filter(([isolatedContext]) => isolatedContext).map(([, browserContext]) => browserContext.then(c => c.close()).catch(() => {})));
-    this._browserContexts.clear();
-    await closeBrowser?.();
   }
 
   // Closes the record and, when a client may still come back for the windows, parks them with the
@@ -263,7 +263,7 @@ export class Context {
       let adopted = false;
       for (const page of browserContext.pages()) {
         const targetId = await this._targetId(browserContext, page);
-        const tab = recorded.get(targetId);
+        const tab = targetId && recorded.get(targetId);
         if (!tab)
           continue;
         this._onPageCreated(page, undefined, targetId);
@@ -315,7 +315,7 @@ export class Context {
     const tabs = this._tabs.filter(tab => !tab.isolatedContext);
     const record: SessionRecord = {
       token: this._session!.token,
-      clientName: this.options.clientName,
+      clientName: this.options.clientName ?? '',
       startedAt: this._session!.startedAt,
       updatedAt: new Date().toISOString(),
       endedAt,
@@ -699,10 +699,15 @@ export class Context {
     }
   }
 
-  private async _targetId(browserContext: playwrightTypes.BrowserContext, page: playwrightTypes.Page): Promise<string> {
-    const session = await browserContext.newCDPSession(page);
+  // Undefined for a page that is closing: it cannot be ours.
+  private async _targetId(browserContext: playwrightTypes.BrowserContext, page: playwrightTypes.Page): Promise<string | undefined> {
+    const session = await browserContext.newCDPSession(page).catch(() => undefined);
+    if (!session)
+      return undefined;
     try {
       return (await session.send('Target.getTargetInfo')).targetInfo.targetId;
+    } catch {
+      return undefined;
     } finally {
       await session.detach().catch(() => {});
     }
@@ -766,14 +771,14 @@ function originOrHostGlob(originOrHost: string) {
   return `*://${originOrHost}/**`;
 }
 
-export async function workspaceFile(options: FileOptions, fileName: string, perCallWorkspaceDir?: string): Promise<string> {
+export async function workspaceFile(options: ContextOptions, fileName: string, perCallWorkspaceDir?: string): Promise<string> {
   const workspace = perCallWorkspaceDir ?? options.cwd;
   const resolvedName = path.resolve(workspace, fileName);
   await checkFile(options, resolvedName, { origin: 'llm' });
   return resolvedName;
 }
 
-export function outputDir(options: FileOptions): string {
+export function outputDir(options: ContextOptions): string {
   if (options.config.outputDir)
     return path.resolve(options.config.outputDir);
   const baseName = options.config.skillMode ? '.playwright-cli' : '.playwright-mcp';
@@ -782,7 +787,7 @@ export function outputDir(options: FileOptions): string {
   return path.join(options.cwd, baseName);
 }
 
-export async function outputFile(options: FileOptions, fileName: string, flags: { origin: 'code' | 'llm' }): Promise<string> {
+export async function outputFile(options: ContextOptions, fileName: string, flags: { origin: 'code' | 'llm' }): Promise<string> {
   const resolvedFile = path.resolve(outputDir(options), fileName);
   await checkFile(options, resolvedFile, flags);
   await fs.promises.mkdir(path.dirname(resolvedFile), { recursive: true });
@@ -790,7 +795,7 @@ export async function outputFile(options: FileOptions, fileName: string, flags: 
   return resolvedFile;
 }
 
-async function checkFile(options: FileOptions, resolvedFilename: string, flags: { origin: 'code' | 'llm' }) {
+async function checkFile(options: ContextOptions, resolvedFilename: string, flags: { origin: 'code' | 'llm' }) {
   // Trust code and unrestricted file access.
   if (flags.origin === 'code' || options.config.allowUnrestrictedFileAccess || options.config.skillMode)
     return;
