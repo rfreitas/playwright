@@ -332,14 +332,16 @@ export class Context {
   private async _writeRecord(endedAt?: string): Promise<SessionRecord> {
     this._recordTimer = undefined;
     const tabs = this._sessionTabs();
+    // Other clients read records: the client chose its name and a page chose its URL, so keep the name plain text
+    // and redact the URL. A redacted URL reopens without its one-time parameters, which should not be replayed anyway.
     const record: SessionRecord = {
       token: this._session!.token,
-      clientName: this.options.clientName ?? '',
+      clientName: (this.options.clientName ?? '').replace(/[^A-Za-z0-9 ._-]/g, '').slice(0, 40),
       startedAt: this._session!.startedAt,
       updatedAt: new Date().toISOString(),
       endedAt,
       tabs: await Promise.all(tabs.map(async tab => ({
-        url: tab.page.url(),
+        url: this.redactSecrets(tab.page.url()),
         title: await tab.title().catch(() => ''),
         targetId: tab.targetId!,
         current: tab === this._currentTab,
