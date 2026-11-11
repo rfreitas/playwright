@@ -61,6 +61,7 @@ export type ContextConfig = {
   sharedBrowserContext?: boolean;
   privateTabs?: boolean;
   resumeGrace?: number;
+  resumeGraceMax?: number;
   snapshot?: {
     mode?: 'full' | 'none';
     boxes?: boolean;

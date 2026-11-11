@@ -161,6 +161,7 @@ const longhandTypes: Record<string, LonghandType> = {
   'sharedBrowserContext': 'boolean',
   'privateTabs': 'boolean',
   'resumeGrace': 'number',
+  'resumeGraceMax': 'number',
   'outputDir': 'string',
   'outputMaxSize': 'number',
   'imageResponses': 'string',

@@ -190,6 +190,8 @@ A browser attached over `--cdp-endpoint` is often shared by several clients, so 
 
 Each private-tabs session has a token, shown in its first response and by `browser_tabs` `list`, and a record of its tabs under `sessions/` in the output directory. On an HTTP server the tabs of a client that disconnected stay open for a grace period, `--resume-grace` in milliseconds, 30 minutes by default; `browser_tabs` `resume` with the token takes them over, or reopens them from the record once they are gone. `browser_sessions` lists the sessions and their state.
 
+To protect a small machine, `--resume-grace-max` caps how many disconnected sessions stay open at once, and parking also closes the oldest open sessions when the container is near its memory limit; a closed session keeps its record, so `browser_tabs` `resume` still reopens it. The cap defaults to a value from the container memory limit, and `0` removes the count cap but keeps the memory one.
+
 ### Idle timeout
 
 A page that keeps animating or rendering costs CPU for as long as the browser is open, and an agent session can last hours. A headless browser launched by the server is therefore closed after an hour without tool calls. Headed browsers, and browsers attached over `--cdp-endpoint` or `--extension`, are never closed automatically. Pass `--idle-timeout` to set the timeout in milliseconds for any mode, or `0` to disable it:

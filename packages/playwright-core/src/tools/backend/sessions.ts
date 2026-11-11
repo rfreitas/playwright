@@ -15,9 +15,14 @@
  */
 
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
+import debug from 'debug';
+
 import type * as playwright from '../../..';
+
+const log = debug('pw:mcp:grace');
 
 // What a private-tabs session leaves on disk, so that a later client can find or reopen its tabs.
 export type SessionRecord = {
@@ -44,14 +49,119 @@ export const graceSessions = new Map<string, GraceEntry>();
 
 const kRetentionMs = 30 * 24 * 60 * 60 * 1000;
 
+// A parked window keeps a browser process alive; this is a rough bytes-per-window estimate.
+const kPerWindowBytes = 250 * 1024 * 1024;
+// Fractions of the memory limit at which parking starts and stops evicting parked windows.
+const kMemoryHighWater = 0.85;
+const kMemoryLowWater = 0.75;
+// cgroup v1 reports this (~2^63) for "no limit".
+const kCgroupV1Unbounded = 9223372036854771712;
+
+// The most sessions allowed in the grace registry; 0 means no count limit. Set at server start.
+let graceMax = 0;
+
+// How many parked grace sessions a small machine can hold before the count cap kicks in.
+export function configureGraceLimit(explicitMax: number | undefined) {
+  graceMax = explicitMax ?? adaptiveGraceMax();
+}
+
+function adaptiveGraceMax(): number {
+  const limit = readCgroupMemory().limit;
+  return Math.max(2, Math.min(40, Math.floor(limit / kPerWindowBytes)));
+}
+
+function cgroupFiles(): { limitFile: string, usageFile: string } {
+  const override = process.env.PWMCP_CGROUP_DIR_FOR_TEST;
+  const v2 = (dir: string) => ({ limitFile: path.join(dir, 'memory.max'), usageFile: path.join(dir, 'memory.current') });
+  const v1 = (dir: string) => ({ limitFile: path.join(dir, 'memory.limit_in_bytes'), usageFile: path.join(dir, 'memory.usage_in_bytes') });
+  if (override)
+    return fs.existsSync(path.join(override, 'memory.max')) ? v2(override) : v1(override);
+  if (fs.existsSync('/sys/fs/cgroup/memory.max'))
+    return v2('/sys/fs/cgroup');
+  return v1('/sys/fs/cgroup/memory');
+}
+
+function readNumberFile(file: string): number | undefined {
+  try {
+    const raw = fs.readFileSync(file, 'utf-8').trim();
+    if (raw === 'max')
+      return undefined;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// The container memory limit and current usage. A host-sized or unbounded cgroup limit reads as the
+// machine total with no usage, so the memory high-water check is skipped but the count cap still has a limit.
+function readCgroupMemory(): { limit: number, usage: number | undefined } {
+  const { limitFile, usageFile } = cgroupFiles();
+  const total = os.totalmem();
+  const limit = readNumberFile(limitFile);
+  if (limit === undefined || limit <= 0 || limit >= total || limit >= kCgroupV1Unbounded)
+    return { limit: total, usage: undefined };
+  return { limit, usage: readNumberFile(usageFile) };
+}
+
 export function parkSession(record: SessionRecord, pages: playwright.Page[], graceMs: number, close: (() => Promise<void>) | undefined) {
-  const timer = setTimeout(async () => {
-    graceSessions.delete(record.token);
-    for (const page of pages)
-      await page.close().catch(() => {});
-    await close?.().catch(() => {});
-  }, graceMs);
+  const timer = setTimeout(() => void evictGraceSession(record.token), graceMs);
   graceSessions.set(record.token, { pages, record, closeAt: Date.now() + graceMs, timer, close });
+  enforceGraceLimits(record.token);
+}
+
+// Closes a parked session as its grace timer would on expiry: drop it from the registry and close its
+// windows and connection, but leave its record on disk so browser_tabs resume can still reopen it.
+async function evictGraceSession(token: string): Promise<void> {
+  const entry = graceSessions.get(token);
+  if (!entry)
+    return;
+  graceSessions.delete(token);
+  clearTimeout(entry.timer);
+  for (const page of entry.pages)
+    await page.close().catch(() => {});
+  await entry.close?.().catch(() => {});
+}
+
+// The grace entry soonest to expire, which is the oldest park; never the one just parked.
+function oldestGraceToken(justParked: string): string | undefined {
+  let oldest: string | undefined;
+  let oldestAt = Infinity;
+  for (const [token, entry] of graceSessions) {
+    if (token !== justParked && entry.closeAt < oldestAt) {
+      oldestAt = entry.closeAt;
+      oldest = token;
+    }
+  }
+  return oldest;
+}
+
+// After a park, bring the registry back under the count cap and the memory high-water mark, evicting
+// the oldest parks first. Both triggers share evictGraceSession and spare the session just parked.
+function enforceGraceLimits(justParked: string) {
+  if (graceMax > 0) {
+    while (graceSessions.size > graceMax) {
+      const token = oldestGraceToken(justParked);
+      if (!token)
+        break;
+      log(`evict ${token}: ${graceSessions.size} grace sessions over cap ${graceMax}`);
+      void evictGraceSession(token);
+    }
+  }
+
+  const { limit, usage } = readCgroupMemory();
+  if (usage === undefined || usage / limit < kMemoryHighWater)
+    return;
+  // Each eviction frees about one window; project the drop so one memory spike does not evict everything.
+  let projected = usage;
+  while (projected / limit >= kMemoryLowWater) {
+    const token = oldestGraceToken(justParked);
+    if (!token)
+      break;
+    log(`evict ${token}: memory ${projected} of ${limit} over high-water`);
+    void evictGraceSession(token);
+    projected -= kPerWindowBytes;
+  }
 }
 
 export function takeSession(token: string): GraceEntry | undefined {

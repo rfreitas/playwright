@@ -20,6 +20,7 @@ import { commaSeparatedList, defaultCodegenLanguage, dotenvFileLoader, enumParse
 import { setupExitWatchdog } from './watchdog';
 import { connectToBrowserEndpoint, createBrowserWithInfo, createIdleTimer } from './browserFactory';
 import { BrowserBackend } from '../backend/browserBackend';
+import { configureGraceLimit } from '../backend/sessions';
 import { filteredTools } from '../backend/tools';
 import { testDebug } from './log';
 import { packageJSON } from '../../package';
@@ -73,6 +74,7 @@ export function decorateMCPCommand(command: Command) {
       .option('--proxy-server <proxy>', 'specify proxy server, for example "http://myproxy:3128", "http://user:password@myproxy:3128" or "socks5://myproxy:8080"')
       .option('--redact-url-params <names>', 'comma-separated list of URL query and fragment parameter names, for example "access_token,code", whose values are replaced with <redacted> in the tool responses.', commaSeparatedList)
       .option('--resume-grace <ms>', 'with --private-tabs on an HTTP server, keep the tabs of a client that disconnected open for this many milliseconds, so that a client can take them over with browser_tabs resume. Defaults to 30 minutes, 0 closes them at once.', numberParser)
+      .option('--resume-grace-max <n>', 'the most disconnected --private-tabs sessions kept open for --resume-grace at once. A further one closes the sessions closest to expiry early, keeping their records so browser_tabs resume can still reopen them; parking also closes the oldest when container memory is near its limit. Defaults to a value from the container memory limit, 0 removes the count limit but keeps the memory one.', numberParser)
       .addOption(new ProgramOption('--remote-header <headers...>', 'headers to send with the remote endpoint connect request, multiple can be specified.').argParser(headerParser).hideHelp())
       .option('--sandbox', 'enable the sandbox for all process types that are normally not sandboxed.')
       .option('--save-session', 'Whether to save the Playwright MCP session into the output directory.')
@@ -105,6 +107,8 @@ export function decorateMCPCommand(command: Command) {
         const config = await resolveCLIConfigForMCP(options);
         // A stdio server dies with its client, so no later client could resume its tabs.
         config.resumeGrace = config.server?.port === undefined ? 0 : config.resumeGrace ?? 30 * 60 * 1000;
+        // The grace registry is process-wide, so its cap is set once here from the resolved config.
+        configureGraceLimit(config.resumeGraceMax);
         const tools = filteredTools(config);
         const useSharedBrowser = config.sharedBrowserContext || config.browser.isolated;
         let sharedBrowserPromise: Promise<BrowserWithInfo> | undefined;

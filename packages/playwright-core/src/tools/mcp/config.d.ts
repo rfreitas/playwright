@@ -167,6 +167,15 @@ export type Config = {
   resumeGrace?: number;
 
   /**
+   * The most disconnected `privateTabs` sessions whose tabs are kept open for `resumeGrace` at once.
+   * When a park would exceed it, the sessions closest to expiry are closed early, though their records
+   * stay so `browser_tabs` `resume` can still reopen them. Parking also closes the oldest parked sessions
+   * when container memory is near its limit. Defaults to a value derived from the container memory limit,
+   * `0` removes the count limit but keeps the memory one.
+   */
+  resumeGraceMax?: number;
+
+  /**
    * Secrets are used to replace matching plain text in the tool responses to prevent the LLM
    * from accidentally getting sensitive data. It is a convenience and not a security feature,
    * make sure to always examine information coming in and from the tool on the client.
