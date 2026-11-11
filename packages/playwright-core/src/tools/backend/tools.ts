@@ -81,8 +81,8 @@ export const browserTools: Tool<any>[] = [
 ];
 
 export function filteredTools(config: Pick<ContextConfig, 'capabilities' | 'privateTabs'>) {
-  // Sessions exist with private tabs only.
-  return browserTools.filter(tool => tool.capability.startsWith('core') || config.capabilities?.includes(tool.capability)).filter(tool => !tool.skillOnly && (tool !== browserSessions || config.privateTabs)).map(tool => ({
+  // Sessions exist with private tabs only. Code run in the server process would reach every client's tabs, so it goes with them.
+  return browserTools.filter(tool => tool.capability.startsWith('core') || config.capabilities?.includes(tool.capability)).filter(tool => !tool.skillOnly && (tool !== browserSessions || config.privateTabs) && !(runCode.includes(tool) && config.privateTabs)).map(tool => ({
     ...tool,
     schema: {
       ...tool.schema,

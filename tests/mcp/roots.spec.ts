@@ -160,4 +160,13 @@ test('should not ask for roots with --ignore-roots', async ({ startClient, serve
   });
   expect(fs.existsSync(path.join(cwd, 'screenshot.png'))).toBe(true);
   expect(fs.existsSync(path.join(rootPath, 'screenshot.png'))).toBe(false);
+
+  // The client's root is not a workspace, by name or as the per-call cwd.
+  for (const args of [{ filename: path.join(rootPath, 'by-name.png') }, { filename: 'by-cwd.png', _meta: { cwd: rootPath } }]) {
+    expect(await client.callTool({ name: 'browser_take_screenshot', arguments: args })).toHaveResponse({
+      error: expect.stringContaining('File access denied'),
+      isError: true,
+    });
+  }
+  expect(fs.readdirSync(rootPath)).toEqual([]);
 });

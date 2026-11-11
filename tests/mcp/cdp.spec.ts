@@ -251,6 +251,13 @@ test('private tabs: each client has its own tabs in its own window, and they sha
   await expect.poll(async () => (await a.callTool({ name: 'browser_tabs', arguments: { action: 'list' } })).content[0].text).toContain('popup');
   expect((await b.callTool({ name: 'browser_tabs', arguments: { action: 'list' } })).content[0].text).not.toContain('popup');
 
+  // Code run in the server process would reach every client's tabs, so that tool is not offered.
+  expect((await a.listTools()).tools.map(t => t.name)).not.toContain('browser_run_code_unsafe');
+  expect(await a.callTool({ name: 'browser_run_code_unsafe', arguments: { code: 'async page => page.context().pages().length' } })).toHaveResponse({
+    error: 'Tool "browser_run_code_unsafe" not found',
+    isError: true,
+  });
+
   // A client that disconnects takes its tabs with it, and leaves everyone else's alone.
   await a.close();
   await expect.poll(() => browserContext.pages().map(p => p.url()).sort()).toEqual([server.HELLO_WORLD, server.PREFIX + '/b'].sort());
