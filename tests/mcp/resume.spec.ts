@@ -375,8 +375,8 @@ test('grace cap: meminfo pressure evicts when the cgroup has no usage, a window 
   // which is enough, so C stays.
   await writeMeminfo(Math.floor(3145728 * 0.14));
   const tokenB = await park('client-b', ['/b']);
-  await expect.poll(() => browserContext.pages().map(p => p.url())).not.toContain(server.PREFIX + '/a');
-  expect(browserContext.pages().map(p => p.url())).not.toContain(server.PREFIX + '/a2');
+  // An eviction closes the windows one after the other.
+  await expect.poll(() => browserContext.pages().map(p => p.url()).filter(u => u.startsWith(server.PREFIX + '/a'))).toEqual([]);
   expect(browserContext.pages().map(p => p.url())).toEqual(expect.arrayContaining([server.PREFIX + '/b', server.PREFIX + '/c']));
   const d = await connect(endpoint, 'client-d');
   const sessions = text(await d.client.callTool({ name: 'browser_sessions', arguments: {} }));
