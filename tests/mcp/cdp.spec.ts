@@ -213,7 +213,7 @@ test('private tabs: each client has its own tabs in its own window, and they sha
   const browserContext = await cdpServer.start();
   const [existing] = browserContext.pages();
   await existing.goto(server.HELLO_WORLD);
-  await existing.evaluate(() => { localStorage.setItem('who', 'shared'); });
+  await existing.evaluate(() => { localStorage.setItem('who', 'shared'); document.cookie = 'who=shared'; });
   const args = [`--cdp-endpoint=${cdpServer.endpoint}`, '--private-tabs'];
 
   const { client: a } = await startClient({ args });
@@ -234,6 +234,7 @@ test('private tabs: each client has its own tabs in its own window, and they sha
   const pageA = browserContext.pages().find(p => p.url() === server.PREFIX + '/a')!;
   const pageB = browserContext.pages().find(p => p.url() === server.PREFIX + '/b')!;
   expect(await pageA.evaluate(() => localStorage.getItem('who'))).toBe('shared');
+  expect(await pageB.evaluate(() => document.cookie)).toContain('who=shared');
 
   // Own windows, so bringing one tab to the front does not hide the other client's tab.
   const windowOf = async (page: typeof pageA) => {

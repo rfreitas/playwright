@@ -27,7 +27,7 @@ import { inheritAndCleanEnv } from '../config/utils';
 import type { ChildProcess } from 'child_process';
 
 // One HTTP server process outlives its clients; a test may run two of them.
-const test = baseTest.extend<{ startServer: (args: string[], env?: Record<string, string | undefined>) => Promise<URL> }>({
+const test = baseTest.extend<{ startServer: (args: string[], env?: Record<string, string | undefined>) => Promise<{ endpoint: URL, process: ChildProcess }> }>({
   startServer: async ({}, use, testInfo) => {
     const processes: ChildProcess[] = [];
     await use(async (args, env) => {
@@ -44,7 +44,7 @@ const test = baseTest.extend<{ startServer: (args: string[], env?: Record<string
         if (match)
           resolve(match[1]);
       }));
-      return new URL('/mcp', url);
+      return { endpoint: new URL('/mcp', url), process: cp };
     });
     for (const cp of processes)
       cp.kill('SIGTERM');
@@ -68,7 +68,7 @@ test('grace: a dropped session keeps its windows, and a later client takes them 
   const browserContext = await cdpServer.start();
   const outputDir = test.info().outputPath('output');
   const args = [`--cdp-endpoint=${cdpServer.endpoint}`, '--private-tabs', `--output-dir=${outputDir}`];
-  const endpoint = await startServer([...args, '--resume-grace=60000']);
+  const { endpoint } = await startServer([...args, '--resume-grace=60000']);
 
   const a = await connect(endpoint, 'client-a');
   const token = tokenOf(await a.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/a' } }));
@@ -115,7 +115,7 @@ test('grace: a dropped session keeps its windows, and a later client takes them 
   expect(text(await c.client.callTool({ name: 'browser_sessions', arguments: {} }))).toContain(`${token} live`);
 
   // Without grace a dropped client's window closes as soon as the heartbeat notices.
-  const endpoint0 = await startServer([...args, '--resume-grace=0']);
+  const { endpoint: endpoint0 } = await startServer([...args, '--resume-grace=0']);
   const d = await connect(endpoint0, 'client-d');
   await d.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/d' } });
   await d.client.close();
@@ -126,7 +126,9 @@ test('records: a closed session reopens from its record, and resume refuses what
   test.setTimeout(60000);
   const browserContext = await cdpServer.start();
   const outputDir = test.info().outputPath('output');
-  const endpoint = await startServer([`--cdp-endpoint=${cdpServer.endpoint}`, '--private-tabs', `--output-dir=${outputDir}`, '--resume-grace=1']);
+  const args = [`--cdp-endpoint=${cdpServer.endpoint}`, '--private-tabs', `--output-dir=${outputDir}`, '--resume-grace=1'];
+  const first = await startServer(args);
+  const endpoint = first.endpoint;
   const recordFile = (token: string) => path.join(outputDir, 'sessions', `${token}.json`);
   const readRecord = (token: string) => fs.promises.readFile(recordFile(token), 'utf-8').then(JSON.parse).catch(() => undefined);
 
@@ -139,6 +141,8 @@ test('records: a closed session reopens from its record, and resume refuses what
 
   // Nothing is held in memory any more, so there is no reminder, and the record reads as closed.
   const c = await connect(endpoint, 'client-c');
+  // It looks at its own tabs first, as an agent does; the blank tab that gives it goes when the recorded ones are back.
+  await c.client.callTool({ name: 'browser_tabs', arguments: { action: 'list' } });
   const sessions = text(await c.client.callTool({ name: 'browser_sessions', arguments: {} }));
   expect(sessions).toContain(`${token} closed`);
   expect(sessions).toContain('reopens a closed session');
@@ -156,6 +160,18 @@ test('records: a closed session reopens from its record, and resume refuses what
   const e = await connect(endpoint, 'client-e');
   expect(text(await e.client.callTool({ name: 'browser_tabs', arguments: { action: 'resume', token: newToken } }))).toContain(`Session ${newToken} is in use`);
   expect(text(await e.client.callTool({ name: 'browser_tabs', arguments: { action: 'resume', token: 'deadbeefdeadbeefdeadbeef' } }))).toContain('Nothing to resume for deadbeefdeadbeefdeadbeef');
+
+  // The server restarts: its clients' tabs close with it, and the live session's record reopens on the next server.
+  await new Promise(f => { first.process.once('exit', f); first.process.kill('SIGTERM'); });
+  await expect.poll(() => browserContext.pages().map(p => p.url())).not.toContain(server.PREFIX + '/a');
+  const { endpoint: restarted } = await startServer(args);
+  const f = await connect(restarted, 'client-f');
+  expect(text(await f.client.callTool({ name: 'browser_sessions', arguments: {} }))).toContain(`${newToken} closed`);
+  const reopened = text(await f.client.callTool({ name: 'browser_tabs', arguments: { action: 'resume', token: newToken } }));
+  const thirdToken = reopened.match(/Reopened from record; this session is ([0-9a-f]{24})/)![1];
+  expect(thirdToken).not.toBe(newToken);
+  expect(browserContext.pages().map(p => p.url())).toContain(server.PREFIX + '/a');
+  expect(await readRecord(newToken)).toBeUndefined();
 });
 
 // Writes a stub cgroup v2 directory and returns it, so the server reads a crafted memory limit and usage.
@@ -179,7 +195,7 @@ test('grace cap: an over-cap park evicts the oldest but keeps its record to reop
   // Plenty of memory headroom, so only the count cap evicts.
   const cgroupDir = await stubCgroup('cgroup1', 64 * 1024 ** 3, 1024 ** 2);
   const args = [`--cdp-endpoint=${cdpServer.endpoint}`, '--private-tabs', `--output-dir=${outputDir}`, '--resume-grace=60000', '--resume-grace-max=1'];
-  const endpoint = await startServer(args, { PWMCP_CGROUP_DIR_FOR_TEST: cgroupDir });
+  const { endpoint } = await startServer(args, { PWMCP_CGROUP_DIR_FOR_TEST: cgroupDir });
 
   const a = await connect(endpoint, 'client-a');
   const tokenA = tokenOf(await a.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/a' } }));
@@ -209,32 +225,40 @@ test('grace cap: an over-cap park evicts the oldest but keeps its record to reop
 });
 
 test('grace cap: the default adapts to a small memory limit', async ({ cdpServer, startServer, server }) => {
-  test.setTimeout(60000);
+  test.setTimeout(90000);
   const browserContext = await cdpServer.start();
-  const outputDir = test.info().outputPath('output');
-  // 512 MB / 250 MB per window => an adaptive cap of two. No usage file, so memory stays out of it.
-  const cgroupDir = await stubCgroup('cgroup2', 512 * 1024 ** 2);
-  const args = [`--cdp-endpoint=${cdpServer.endpoint}`, '--private-tabs', `--output-dir=${outputDir}`, '--resume-grace=60000'];
-  const endpoint = await startServer(args, { PWMCP_CGROUP_DIR_FOR_TEST: cgroupDir });
+  // 512 MB / 250 MB per window => an adaptive cap of two, read from the cgroup, or from /proc/meminfo when the cgroup
+  // is unbounded. Memory use stays out of it: no usage file, and meminfo shows nearly all of it available.
+  const meminfo = test.info().outputPath('meminfo');
+  await fs.promises.writeFile(meminfo, 'MemTotal:    524288 kB\nMemFree:  500000 kB\nMemAvailable:  510000 kB\n');
+  const sources = {
+    cgroup: { PWMCP_CGROUP_DIR_FOR_TEST: await stubCgroup('cgroup2', 512 * 1024 ** 2) },
+    meminfo: { PWMCP_CGROUP_DIR_FOR_TEST: await stubCgroup('cgroup2-unbounded', 'max'), PWMCP_MEMINFO_FOR_TEST: meminfo },
+  };
+  for (const [source, env] of Object.entries(sources)) {
+    const outputDir = test.info().outputPath('output-' + source);
+    const args = [`--cdp-endpoint=${cdpServer.endpoint}`, '--private-tabs', `--output-dir=${outputDir}`, '--resume-grace=60000'];
+    const { endpoint } = await startServer(args, env);
 
-  const tokens: string[] = [];
-  for (const u of ['/one', '/two', '/three']) {
-    const client = await connect(endpoint, 'client' + u);
-    tokens.push(tokenOf(await client.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + u } })));
-    await expect.poll(() => readRecordAt(outputDir, tokens[tokens.length - 1])).toBeTruthy();
-    await client.transport.terminateSession();
-    await client.client.close();
-    await expect.poll(async () => (await readRecordAt(outputDir, tokens[tokens.length - 1]))?.endedAt).toEqual(expect.any(String));
+    const tokens: string[] = [];
+    for (const u of [`/${source}-one`, `/${source}-two`, `/${source}-three`]) {
+      const client = await connect(endpoint, 'client' + u);
+      tokens.push(tokenOf(await client.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + u } })));
+      await expect.poll(() => readRecordAt(outputDir, tokens[tokens.length - 1])).toBeTruthy();
+      await client.transport.terminateSession();
+      await client.client.close();
+      await expect.poll(async () => (await readRecordAt(outputDir, tokens[tokens.length - 1]))?.endedAt).toEqual(expect.any(String));
+    }
+
+    // Three parks over a cap of two: the oldest is evicted, its record kept.
+    await expect.poll(() => browserContext.pages().map(p => p.url())).not.toContain(`${server.PREFIX}/${source}-one`);
+    const live = await connect(endpoint, 'client-x');
+    const sessions = text(await live.client.callTool({ name: 'browser_sessions', arguments: {} }));
+    expect(sessions).toContain(`${tokens[0]} closed`);
+    expect(sessions).toContain(`${tokens[1]} grace until`);
+    expect(sessions).toContain(`${tokens[2]} grace until`);
+    expect(await readRecordAt(outputDir, tokens[0])).toEqual(expect.objectContaining({ token: tokens[0] }));
   }
-
-  // Three parks over a cap of two: the oldest is evicted, its record kept.
-  await expect.poll(() => browserContext.pages().map(p => p.url())).not.toContain(server.PREFIX + '/one');
-  const live = await connect(endpoint, 'client-x');
-  const sessions = text(await live.client.callTool({ name: 'browser_sessions', arguments: {} }));
-  expect(sessions).toContain(`${tokens[0]} closed`);
-  expect(sessions).toContain(`${tokens[1]} grace until`);
-  expect(sessions).toContain(`${tokens[2]} grace until`);
-  expect(await readRecordAt(outputDir, tokens[0])).toEqual(expect.objectContaining({ token: tokens[0] }));
 });
 
 test('grace cap: memory pressure evicts even under the count cap', async ({ cdpServer, startServer, server }) => {
@@ -245,7 +269,7 @@ test('grace cap: memory pressure evicts even under the count cap', async ({ cdpS
   const limit = Math.min(2 * 1024 ** 3, Math.floor(os.totalmem() / 2));
   const cgroupDir = await stubCgroup('cgroup3', limit, Math.floor(limit * 0.86));
   const args = [`--cdp-endpoint=${cdpServer.endpoint}`, '--private-tabs', `--output-dir=${outputDir}`, '--resume-grace=60000', '--resume-grace-max=40'];
-  const endpoint = await startServer(args, { PWMCP_CGROUP_DIR_FOR_TEST: cgroupDir });
+  const { endpoint } = await startServer(args, { PWMCP_CGROUP_DIR_FOR_TEST: cgroupDir });
 
   const a = await connect(endpoint, 'client-a');
   const tokenA = tokenOf(await a.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/a' } }));
@@ -280,7 +304,7 @@ test('grace cap: meminfo pressure evicts when the cgroup has no usage', async ({
   const meminfo = test.info().outputPath('meminfo');
   await fs.promises.writeFile(meminfo, 'MemTotal:    1000000 kB\nMemFree:  50000 kB\nMemAvailable:  100000 kB\n');
   const args = [`--cdp-endpoint=${cdpServer.endpoint}`, '--private-tabs', `--output-dir=${outputDir}`, '--resume-grace=60000', '--resume-grace-max=40'];
-  const endpoint = await startServer(args, { PWMCP_CGROUP_DIR_FOR_TEST: cgroupDir, PWMCP_MEMINFO_FOR_TEST: meminfo });
+  const { endpoint } = await startServer(args, { PWMCP_CGROUP_DIR_FOR_TEST: cgroupDir, PWMCP_MEMINFO_FOR_TEST: meminfo });
 
   const a = await connect(endpoint, 'client-a');
   const tokenA = tokenOf(await a.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/a' } }));
