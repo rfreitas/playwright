@@ -93,15 +93,29 @@ function readNumberFile(file: string): number | undefined {
   }
 }
 
-// The container memory limit and current usage. A host-sized or unbounded cgroup limit reads as the
-// machine total with no usage, so the memory high-water check is skipped but the count cap still has a limit.
+// The container memory limit and current usage. A host-sized or unbounded cgroup limit (as on a Firecracker VM,
+// where the cgroup limit equals the VM memory) falls back to /proc/meminfo. If that is unreadable too, usage is
+// undefined, so the memory high-water check is skipped but the count cap still has a limit.
 function readCgroupMemory(): { limit: number, usage: number | undefined } {
   const { limitFile, usageFile } = cgroupFiles();
   const total = os.totalmem();
   const limit = readNumberFile(limitFile);
   if (limit === undefined || limit <= 0 || limit >= total || limit >= kCgroupV1Unbounded)
-    return { limit: total, usage: undefined };
+    return readMeminfo() ?? { limit: total, usage: undefined };
   return { limit, usage: readNumberFile(usageFile) };
+}
+
+function readMeminfo(): { limit: number, usage: number } | undefined {
+  try {
+    const text = fs.readFileSync(process.env.PWMCP_MEMINFO_FOR_TEST || '/proc/meminfo', 'utf-8');
+    const kb = (name: string) => Number(new RegExp(`^${name}:\\s+(\\d+)\\s*kB`, 'm').exec(text)?.[1]) * 1024;
+    const total = kb('MemTotal');
+    const available = kb('MemAvailable');
+    if (total > 0 && available >= 0)
+      return { limit: total, usage: total - available };
+  } catch {
+  }
+  return undefined;
 }
 
 export function parkSession(record: SessionRecord, pages: playwright.Page[], graceMs: number, close: (() => Promise<void>) | undefined) {
