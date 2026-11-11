@@ -58,10 +58,10 @@ const kMemoryLowWater = 0.75;
 // cgroup v1 reports this (~2^63) for "no limit".
 const kCgroupV1Unbounded = 9223372036854771712;
 
-// The most sessions allowed in the grace registry; 0 means no count limit. Set at server start.
+// The most windows parked sessions may hold; 0 means no count limit. Set at server start.
 let graceMax = 0;
 
-// How many parked grace sessions a small machine can hold before the count cap kicks in.
+// How many parked windows a small machine can hold before the count cap kicks in.
 export function configureGraceLimit(explicitMax: number | undefined) {
   graceMax = explicitMax ?? adaptiveGraceMax();
 }
@@ -151,15 +151,22 @@ function oldestGraceToken(justParked: string): string | undefined {
   return oldest;
 }
 
-// After a park, bring the registry back under the count cap and the memory high-water mark, evicting
+function parkedWindows(): number {
+  let count = 0;
+  for (const entry of graceSessions.values())
+    count += entry.pages.length;
+  return count;
+}
+
+// After a park, bring the parked windows back under the count cap and the memory high-water mark, evicting
 // the oldest parks first. Both triggers share evictGraceSession and spare the session just parked.
 function enforceGraceLimits(justParked: string) {
   if (graceMax > 0) {
-    while (graceSessions.size > graceMax) {
+    while (parkedWindows() > graceMax) {
       const token = oldestGraceToken(justParked);
       if (!token)
         break;
-      log(`evict ${token}: ${graceSessions.size} grace sessions over cap ${graceMax}`);
+      log(`evict ${token}: ${parkedWindows()} grace windows over cap ${graceMax}`);
       void evictGraceSession(token);
     }
   }
@@ -167,15 +174,15 @@ function enforceGraceLimits(justParked: string) {
   const { limit, usage } = readCgroupMemory();
   if (usage === undefined || usage / limit < kMemoryHighWater)
     return;
-  // Each eviction frees about one window; project the drop so one memory spike does not evict everything.
+  // Each evicted window frees about kPerWindowBytes; project the drop so one memory spike does not evict everything.
   let projected = usage;
   while (projected / limit >= kMemoryLowWater) {
     const token = oldestGraceToken(justParked);
     if (!token)
       break;
     log(`evict ${token}: memory ${projected} of ${limit} over high-water`);
+    projected -= kPerWindowBytes * graceSessions.get(token)!.pages.length;
     void evictGraceSession(token);
-    projected -= kPerWindowBytes;
   }
 }
 

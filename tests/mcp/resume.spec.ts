@@ -205,7 +205,7 @@ test('grace cap: an over-cap park evicts the oldest but keeps its record to reop
   const outputDir = test.info().outputPath('output');
   // Plenty of memory headroom, so only the count cap evicts.
   const cgroupDir = await stubCgroup('cgroup1', 64 * 1024 ** 3, 1024 ** 2);
-  const args = [`--cdp-endpoint=${cdpServer.endpoint}`, '--private-tabs', `--output-dir=${outputDir}`, '--resume-grace=60000', '--resume-grace-max=1'];
+  const args = [`--cdp-endpoint=${cdpServer.endpoint}`, '--private-tabs', `--output-dir=${outputDir}`, '--resume-grace=60000', '--resume-grace-max=2'];
   const { endpoint } = await startServer(args, { PWMCP_CGROUP_DIR_FOR_TEST: cgroupDir });
 
   const a = await connect(endpoint, 'client-a');
@@ -217,12 +217,14 @@ test('grace cap: an over-cap park evicts the oldest but keeps its record to reop
 
   const b = await connect(endpoint, 'client-b');
   const tokenB = tokenOf(await b.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/b' } }));
+  await b.client.callTool({ name: 'browser_tabs', arguments: { action: 'new', url: server.PREFIX + '/b2' } });
+  await expect.poll(async () => (await readRecordAt(outputDir, tokenB))?.tabs.length).toBe(2);
   await b.transport.terminateSession();
   await b.client.close();
 
-  // Two sessions in grace over a cap of one: the oldest, A, is evicted; B, the newest, stays.
+  // The cap counts windows: B parks two, so three are in grace over a cap of two. The oldest, A, is evicted; B, the newest, stays.
   await expect.poll(() => browserContext.pages().map(p => p.url())).not.toContain(server.PREFIX + '/a');
-  expect(browserContext.pages().map(p => p.url())).toContain(server.PREFIX + '/b');
+  expect(browserContext.pages().map(p => p.url())).toEqual(expect.arrayContaining([server.PREFIX + '/b', server.PREFIX + '/b2']));
 
   const c = await connect(endpoint, 'client-c');
   const sessions = text(await c.client.callTool({ name: 'browser_sessions', arguments: {} }));
@@ -306,37 +308,46 @@ test('grace cap: memory pressure evicts even under the count cap', async ({ cdpS
   expect(await readRecordAt(outputDir, tokenA)).toEqual(expect.objectContaining({ token: tokenA }));
 });
 
-test('grace cap: meminfo pressure evicts when the cgroup has no usage', async ({ cdpServer, startServer, server }) => {
+test('grace cap: meminfo pressure evicts when the cgroup has no usage, a window at a time', async ({ cdpServer, startServer, server }) => {
   test.setTimeout(60000);
   const browserContext = await cdpServer.start();
   const outputDir = test.info().outputPath('output');
-  // An unbounded cgroup gives no usage, so memory comes from /proc/meminfo: 90% used, over the 85% high-water mark.
+  // An unbounded cgroup gives no usage, so memory comes from /proc/meminfo: 3 GB, little of it used at first.
   const cgroupDir = await stubCgroup('cgroup4', 'max');
   const meminfo = test.info().outputPath('meminfo');
-  await fs.promises.writeFile(meminfo, 'MemTotal:    1000000 kB\nMemFree:  50000 kB\nMemAvailable:  100000 kB\n');
+  const writeMeminfo = (availableKb: number) => fs.promises.writeFile(meminfo, `MemTotal:    3145728 kB\nMemFree:  ${availableKb} kB\nMemAvailable:  ${availableKb} kB\n`);
+  await writeMeminfo(3000000);
   const args = [`--cdp-endpoint=${cdpServer.endpoint}`, '--private-tabs', `--output-dir=${outputDir}`, '--resume-grace=60000', '--resume-grace-max=40'];
   const { endpoint } = await startServer(args, { PWMCP_CGROUP_DIR_FOR_TEST: cgroupDir, PWMCP_MEMINFO_FOR_TEST: meminfo });
 
-  const a = await connect(endpoint, 'client-a');
-  const tokenA = tokenOf(await a.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/a' } }));
-  await expect.poll(() => readRecordAt(outputDir, tokenA)).toBeTruthy();
-  await a.transport.terminateSession();
-  await a.client.close();
-  // A is the only park and far under the cap of 40, so its own park does not evict it.
-  await expect.poll(async () => (await readRecordAt(outputDir, tokenA))?.endedAt).toEqual(expect.any(String));
-  expect(browserContext.pages().map(p => p.url())).toContain(server.PREFIX + '/a');
+  // A parks two windows, then C parks one.
+  const park = async (name: string, urls: string[]) => {
+    const client = await connect(endpoint, name);
+    const token = tokenOf(await client.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + urls[0] } }));
+    for (const url of urls.slice(1))
+      await client.client.callTool({ name: 'browser_tabs', arguments: { action: 'new', url: server.PREFIX + url } });
+    await expect.poll(async () => (await readRecordAt(outputDir, token))?.tabs.length).toBe(urls.length);
+    await client.transport.terminateSession();
+    await client.client.close();
+    await expect.poll(async () => (await readRecordAt(outputDir, token))?.endedAt).toEqual(expect.any(String));
+    return token;
+  };
+  const tokenA = await park('client-a', ['/a', '/a2']);
+  const tokenC = await park('client-c', ['/c']);
+  expect(browserContext.pages().map(p => p.url())).toEqual(expect.arrayContaining([server.PREFIX + '/a', server.PREFIX + '/a2', server.PREFIX + '/c']));
 
-  const b = await connect(endpoint, 'client-b');
-  const tokenB = tokenOf(await b.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/b' } }));
-  await b.transport.terminateSession();
-  await b.client.close();
-
-  // Meminfo shows memory over the high-water mark, so parking B evicts the oldest park, A, though the count cap was not hit.
+  // Now 86% is used, over the 85% high-water mark, and getting under the 75% low-water mark takes 11% of 3 GB, more
+  // than one window frees. Parking B evicts the oldest park, A, though the count cap was not hit; A frees two windows,
+  // which is enough, so C stays.
+  await writeMeminfo(Math.floor(3145728 * 0.14));
+  const tokenB = await park('client-b', ['/b']);
   await expect.poll(() => browserContext.pages().map(p => p.url())).not.toContain(server.PREFIX + '/a');
-  expect(browserContext.pages().map(p => p.url())).toContain(server.PREFIX + '/b');
-  const c = await connect(endpoint, 'client-c');
-  const sessions = text(await c.client.callTool({ name: 'browser_sessions', arguments: {} }));
+  expect(browserContext.pages().map(p => p.url())).not.toContain(server.PREFIX + '/a2');
+  expect(browserContext.pages().map(p => p.url())).toEqual(expect.arrayContaining([server.PREFIX + '/b', server.PREFIX + '/c']));
+  const d = await connect(endpoint, 'client-d');
+  const sessions = text(await d.client.callTool({ name: 'browser_sessions', arguments: {} }));
   expect(sessions).toContain(`${tokenA} closed`);
   expect(sessions).toContain(`${tokenB} grace until`);
+  expect(sessions).toContain(`${tokenC} grace until`);
   expect(await readRecordAt(outputDir, tokenA)).toEqual(expect.objectContaining({ token: tokenA }));
 });

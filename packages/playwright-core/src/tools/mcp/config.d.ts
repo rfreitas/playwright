@@ -168,7 +168,7 @@ export type Config = {
   resumeGrace?: number;
 
   /**
-   * The most disconnected `privateTabs` sessions whose tabs are kept open for `resumeGrace` at once.
+   * The most windows of disconnected `privateTabs` sessions kept open for `resumeGrace` at once.
    * When a park would exceed it, the sessions closest to expiry are closed early, though their records
    * stay so `browser_tabs` `resume` can still reopen them. Parking also closes the oldest parked sessions
    * when container memory is near its limit. Defaults to a value derived from the container memory limit,
