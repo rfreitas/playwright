@@ -236,6 +236,17 @@ test('grace cap: an over-cap park evicts the oldest but keeps its record to reop
   await expect.poll(() => browserContext.pages().map(p => p.url())).not.toContain(server.PREFIX + '/a');
   expect(browserContext.pages().map(p => p.url())).toEqual(expect.arrayContaining([server.PREFIX + '/b', server.PREFIX + '/b2']));
 
+  // A parked window that closes no longer counts: with one of B's closed, D's park fits under the cap and evicts nobody.
+  await browserContext.pages().find(p => p.url() === server.PREFIX + '/b2')!.close();
+  const d = await connect(endpoint, 'client-d');
+  const tokenD = tokenOf(await d.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/d' } }));
+  await expect.poll(() => readRecordAt(outputDir, tokenD)).toBeTruthy();
+  await d.transport.terminateSession();
+  await d.client.close();
+  await expect.poll(async () => (await readRecordAt(outputDir, tokenD))?.endedAt).toEqual(expect.any(String));
+  await new Promise(f => setTimeout(f, 1000));
+  expect(browserContext.pages().map(p => p.url())).toEqual(expect.arrayContaining([server.PREFIX + '/b', server.PREFIX + '/d']));
+
   // W alone has more windows than the cap: it is not parked, so it costs B nothing, and its record stays.
   const w = await connect(endpoint, 'client-w');
   const tokenW = tokenOf(await w.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/w' } }));
@@ -245,13 +256,14 @@ test('grace cap: an over-cap park evicts the oldest but keeps its record to reop
   await w.transport.terminateSession();
   await w.client.close();
   await expect.poll(() => browserContext.pages().map(p => p.url()).filter(u => u.startsWith(server.PREFIX + '/w'))).toEqual([]);
-  expect(browserContext.pages().map(p => p.url())).toEqual(expect.arrayContaining([server.PREFIX + '/b', server.PREFIX + '/b2']));
+  expect(browserContext.pages().map(p => p.url())).toEqual(expect.arrayContaining([server.PREFIX + '/b', server.PREFIX + '/d']));
 
   const c = await connect(endpoint, 'client-c');
   const sessions = text(await c.client.callTool({ name: 'browser_sessions', arguments: {} }));
   expect(sessions).toContain(`${tokenA} closed`);
   expect(sessions).toContain(`${tokenB} grace until`);
   expect(sessions).toContain(`${tokenW} closed`);
+  expect(sessions).toContain(`${tokenD} grace until`);
   // Eviction kept A's record, so it reopens from the record under a new token.
   expect(await readRecordAt(outputDir, tokenA)).toEqual(expect.objectContaining({ token: tokenA }));
   const resumed = text(await c.client.callTool({ name: 'browser_tabs', arguments: { action: 'resume', token: tokenA } }));

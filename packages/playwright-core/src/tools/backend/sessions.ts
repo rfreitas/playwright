@@ -158,10 +158,15 @@ function oldestGraceToken(justParked: string): string | undefined {
   return oldest;
 }
 
+// A parked window can close on its own (a crash, window.close(), a person); only the open ones hold memory.
+function openWindows(entry: GraceEntry): number {
+  return entry.pages.filter(page => !page.isClosed()).length;
+}
+
 function parkedWindows(): number {
   let count = 0;
   for (const entry of graceSessions.values())
-    count += entry.pages.length;
+    count += openWindows(entry);
   return count;
 }
 
@@ -188,7 +193,7 @@ function enforceGraceLimits(justParked: string) {
     if (!token)
       break;
     log(`evict ${token}: memory ${projected} of ${limit} over high-water`);
-    projected -= kPerWindowBytes * graceSessions.get(token)!.pages.length;
+    projected -= kPerWindowBytes * openWindows(graceSessions.get(token)!);
     void evictGraceSession(token);
   }
 }
