@@ -73,7 +73,7 @@ test('grace: a dropped session keeps its windows, and a later client takes them 
   const a = await connect(endpoint, 'client-a');
   const token = tokenOf(await a.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/a' } }));
   const recordFile = path.join(outputDir, 'sessions', `${token}.json`);
-  const readRecord = () => fs.promises.readFile(recordFile, 'utf-8').then(JSON.parse, () => undefined);
+  const readRecord = () => fs.promises.readFile(recordFile, 'utf-8').then(JSON.parse).catch(() => undefined);
   await expect.poll(readRecord).toEqual(expect.objectContaining({
     token,
     clientName: 'client-a',
@@ -128,7 +128,7 @@ test('records: a closed session reopens from its record, and resume refuses what
   const outputDir = test.info().outputPath('output');
   const endpoint = await startServer([`--cdp-endpoint=${cdpServer.endpoint}`, '--private-tabs', `--output-dir=${outputDir}`, '--resume-grace=1']);
   const recordFile = (token: string) => path.join(outputDir, 'sessions', `${token}.json`);
-  const readRecord = (token: string) => fs.promises.readFile(recordFile(token), 'utf-8').then(JSON.parse, () => undefined);
+  const readRecord = (token: string) => fs.promises.readFile(recordFile(token), 'utf-8').then(JSON.parse).catch(() => undefined);
 
   const a = await connect(endpoint, 'client-a');
   const token = tokenOf(await a.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/a' } }));
@@ -168,8 +168,9 @@ async function stubCgroup(name: string, limit: number | 'max', usage?: number): 
   return dir;
 }
 
+// The server rewrites a record in place, so a read can catch it half-written: that reads as no record yet.
 const readRecordAt = (outputDir: string, token: string) =>
-  fs.promises.readFile(path.join(outputDir, 'sessions', `${token}.json`), 'utf-8').then(JSON.parse, () => undefined);
+  fs.promises.readFile(path.join(outputDir, 'sessions', `${token}.json`), 'utf-8').then(JSON.parse).catch(() => undefined);
 
 test('grace cap: an over-cap park evicts the oldest but keeps its record to reopen', async ({ cdpServer, startServer, server }) => {
   test.setTimeout(60000);
