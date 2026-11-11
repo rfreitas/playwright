@@ -146,7 +146,7 @@ test('records: a closed session reopens from its record, and resume refuses what
 });
 
 // Writes a stub cgroup v2 directory and returns it, so the server reads a crafted memory limit and usage.
-async function stubCgroup(name: string, limit: number, usage?: number): Promise<string> {
+async function stubCgroup(name: string, limit: number | 'max', usage?: number): Promise<string> {
   const dir = test.info().outputPath(name);
   await fs.promises.mkdir(dir, { recursive: true });
   await fs.promises.writeFile(path.join(dir, 'memory.max'), String(limit));
@@ -248,6 +248,41 @@ test('grace cap: memory pressure evicts even under the count cap', async ({ cdpS
   await b.client.close();
 
   // Memory is over the high-water mark, so parking B evicts the oldest park, A, though the count cap was not hit.
+  await expect.poll(() => browserContext.pages().map(p => p.url())).not.toContain(server.PREFIX + '/a');
+  expect(browserContext.pages().map(p => p.url())).toContain(server.PREFIX + '/b');
+  const c = await connect(endpoint, 'client-c');
+  const sessions = text(await c.client.callTool({ name: 'browser_sessions', arguments: {} }));
+  expect(sessions).toContain(`${tokenA} closed`);
+  expect(sessions).toContain(`${tokenB} grace until`);
+  expect(await readRecordAt(outputDir, tokenA)).toEqual(expect.objectContaining({ token: tokenA }));
+});
+
+test('grace cap: meminfo pressure evicts when the cgroup has no usage', async ({ cdpServer, startServer, server }) => {
+  test.setTimeout(60000);
+  const browserContext = await cdpServer.start();
+  const outputDir = test.info().outputPath('output');
+  // An unbounded cgroup gives no usage, so memory comes from /proc/meminfo: 90% used, over the 85% high-water mark.
+  const cgroupDir = await stubCgroup('cgroup4', 'max');
+  const meminfo = test.info().outputPath('meminfo');
+  await fs.promises.writeFile(meminfo, 'MemTotal:    1000000 kB\nMemFree:  50000 kB\nMemAvailable:  100000 kB\n');
+  const args = [`--cdp-endpoint=${cdpServer.endpoint}`, '--private-tabs', `--output-dir=${outputDir}`, '--resume-grace=60000', '--resume-grace-max=40'];
+  const endpoint = await startServer(args, { PWMCP_CGROUP_DIR_FOR_TEST: cgroupDir, PWMCP_MEMINFO_FOR_TEST: meminfo });
+
+  const a = await connect(endpoint, 'client-a');
+  const tokenA = tokenOf(await a.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/a' } }));
+  await expect.poll(() => readRecordAt(outputDir, tokenA)).toBeTruthy();
+  await a.transport.terminateSession();
+  await a.client.close();
+  // A is the only park and far under the cap of 40, so its own park does not evict it.
+  await expect.poll(async () => (await readRecordAt(outputDir, tokenA))?.endedAt).toEqual(expect.any(String));
+  expect(browserContext.pages().map(p => p.url())).toContain(server.PREFIX + '/a');
+
+  const b = await connect(endpoint, 'client-b');
+  const tokenB = tokenOf(await b.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/b' } }));
+  await b.transport.terminateSession();
+  await b.client.close();
+
+  // Meminfo shows memory over the high-water mark, so parking B evicts the oldest park, A, though the count cap was not hit.
   await expect.poll(() => browserContext.pages().map(p => p.url())).not.toContain(server.PREFIX + '/a');
   expect(browserContext.pages().map(p => p.url())).toContain(server.PREFIX + '/b');
   const c = await connect(endpoint, 'client-c');
