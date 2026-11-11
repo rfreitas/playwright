@@ -195,7 +195,7 @@ async function stubCgroup(name: string, limit: number | 'max', usage?: number): 
   return dir;
 }
 
-// The server rewrites a record in place, so a read can catch it half-written: that reads as no record yet.
+// A record that is not written yet reads as undefined.
 const readRecordAt = (outputDir: string, token: string) =>
   fs.promises.readFile(path.join(outputDir, 'sessions', `${token}.json`), 'utf-8').then(JSON.parse).catch(() => undefined);
 

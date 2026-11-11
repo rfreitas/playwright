@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -197,7 +198,11 @@ function recordFile(dir: string, token: string): string {
 
 export async function writeRecord(dir: string, record: SessionRecord) {
   await fs.promises.mkdir(dir, { recursive: true });
-  await fs.promises.writeFile(recordFile(dir, record.token), JSON.stringify(record, null, 2));
+  // Write aside and rename, so that a reader never sees a half-written record and a crash leaves the old one.
+  const file = recordFile(dir, record.token);
+  const temp = `${file}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  await fs.promises.writeFile(temp, JSON.stringify(record, null, 2));
+  await fs.promises.rename(temp, file);
   // A record's mtime is its updatedAt; the old ones go so that the directory does not grow forever.
   const cutoff = Date.now() - kRetentionMs;
   for (const name of await fs.promises.readdir(dir)) {
