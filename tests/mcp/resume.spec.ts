@@ -93,8 +93,20 @@ test('grace: a dropped session keeps its windows, and a later client takes them 
   expect(text(await b.client.callTool({ name: 'browser_snapshot', arguments: {} }))).not.toContain(kReminder);
   expect(text(await b.client.callTool({ name: 'browser_sessions', arguments: {} }))).toContain(`${token} grace until`);
 
-  // C takes the session over: the same window, the same token.
+  // A client that only ever had a blank tab leaves nothing to come back to: no window is kept for it, and no record.
+  const blank = await connect(endpoint, 'client-blank');
+  const blankToken = tokenOf(await blank.client.callTool({ name: 'browser_tabs', arguments: { action: 'list' } }));
+  const blanks = () => browserContext.pages().filter(p => p.url() === 'about:blank').length;
+  const blanksWith = blanks();
+  await blank.transport.terminateSession();
+  await blank.client.close();
+  await expect.poll(blanks).toBe(blanksWith - 1);
+  expect(text(await b.client.callTool({ name: 'browser_sessions', arguments: {} }))).not.toContain(blankToken);
+
+  // C takes the session over: the same window, the same token. It looked at its own tabs first, as an agent does,
+  // and the blank tab that gave it is gone once it has its real ones.
   const c = await connect(endpoint, 'client-c');
+  await c.client.callTool({ name: 'browser_tabs', arguments: { action: 'list' } });
   expect(await c.client.callTool({ name: 'browser_tabs', arguments: { action: 'resume', token } })).toHaveResponse({
     result: `- 0: (current) [](${server.PREFIX}/a)`,
   });
@@ -129,6 +141,7 @@ test('records: a closed session reopens from its record, and resume refuses what
   const c = await connect(endpoint, 'client-c');
   const sessions = text(await c.client.callTool({ name: 'browser_sessions', arguments: {} }));
   expect(sessions).toContain(`${token} closed`);
+  expect(sessions).toContain('reopens a closed session');
   expect(sessions).not.toContain(kReminder);
 
   const resumed = text(await c.client.callTool({ name: 'browser_tabs', arguments: { action: 'resume', token } }));
