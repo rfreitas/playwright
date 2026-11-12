@@ -321,37 +321,44 @@ test('grace cap: the default adapts to a small memory limit', async ({ cdpServer
   }
 });
 
-test('grace cap: memory pressure evicts even under the count cap', async ({ cdpServer, startServer, server }) => {
+test('grace cap: memory pressure evicts even under the count cap, but page cache does not count', async ({ cdpServer, startServer, server }) => {
   test.setTimeout(60000);
   const browserContext = await cdpServer.start();
   const outputDir = test.info().outputPath('output');
-  // A bounded limit well above the count cap, but usage already over the 85% high-water mark.
+  // A bounded limit well above the count cap, and usage over the 85% high-water mark; at first most of it is
+  // inactive page cache, which the kernel can reclaim.
   const limit = Math.min(2 * 1024 ** 3, Math.floor(os.totalmem() / 2));
   const cgroupDir = await stubCgroup('cgroup3', limit, Math.floor(limit * 0.86));
+  const writeInactiveFile = (bytes: number) => fs.promises.writeFile(path.join(cgroupDir, 'memory.stat'), `anon 1000\ninactive_file ${bytes}\nactive_file 0\n`);
+  await writeInactiveFile(Math.floor(limit * 0.5));
   const args = [`--cdp-endpoint=${cdpServer.endpoint}`, '--private-tabs', `--output-dir=${outputDir}`, '--resume-grace=60000', '--resume-grace-max=40'];
   const { endpoint } = await startServer(args, { PWMCP_CGROUP_DIR_FOR_TEST: cgroupDir });
+  const watcher = await connect(endpoint, 'client-watcher');
+  const sessions = async () => text(await watcher.client.callTool({ name: 'browser_sessions', arguments: {} }));
 
-  const a = await connect(endpoint, 'client-a');
-  const tokenA = tokenOf(await a.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/a' } }));
-  await expect.poll(() => readRecordAt(outputDir, tokenA)).toBeTruthy();
-  await a.transport.terminateSession();
-  await a.client.close();
-  // A is the only park and far under the cap of 40, so its own park does not evict it.
-  await expect.poll(async () => (await readRecordAt(outputDir, tokenA))?.endedAt).toEqual(expect.any(String));
-  expect(browserContext.pages().map(p => p.url())).toContain(server.PREFIX + '/a');
+  const park = async (name: string, url: string) => {
+    const client = await connect(endpoint, name);
+    const token = tokenOf(await client.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + url } }));
+    await expect.poll(() => readRecordAt(outputDir, token)).toBeTruthy();
+    await client.transport.terminateSession();
+    await client.client.close();
+    await expect.poll(sessions).toContain(`${token} grace until`);
+    return token;
+  };
 
-  const b = await connect(endpoint, 'client-b');
-  const tokenB = tokenOf(await b.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/b' } }));
-  await b.transport.terminateSession();
-  await b.client.close();
+  // Without the page cache, memory is far under the high-water mark: B's park evicts nobody.
+  const tokenA = await park('client-a', '/a');
+  const tokenB = await park('client-b', '/b');
+  expect(await sessions()).toContain(`${tokenA} grace until`);
 
-  // Memory is over the high-water mark, so parking B evicts the oldest park, A, though the count cap was not hit.
+  // Now the usage is real: parking C evicts the oldest park, A, though the count cap was not hit.
+  await writeInactiveFile(0);
+  const tokenC = await park('client-c', '/c');
+  const list = await sessions();
+  expect(list).toContain(`${tokenA} closed`);
+  expect(list).toContain(`${tokenB} grace until`);
+  expect(list).toContain(`${tokenC} grace until`);
   await expect.poll(() => browserContext.pages().map(p => p.url())).not.toContain(server.PREFIX + '/a');
-  expect(browserContext.pages().map(p => p.url())).toContain(server.PREFIX + '/b');
-  const c = await connect(endpoint, 'client-c');
-  const sessions = text(await c.client.callTool({ name: 'browser_sessions', arguments: {} }));
-  expect(sessions).toContain(`${tokenA} closed`);
-  expect(sessions).toContain(`${tokenB} grace until`);
   expect(await readRecordAt(outputDir, tokenA)).toEqual(expect.objectContaining({ token: tokenA }));
 });
 

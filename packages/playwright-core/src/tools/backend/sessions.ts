@@ -71,10 +71,11 @@ function adaptiveGraceMax(): number {
   return Math.max(2, Math.min(40, Math.floor(limit / kPerWindowBytes)));
 }
 
-function cgroupFiles(): { limitFile: string, usageFile: string } {
+// The usage file counts page cache; the stat key is the part of it that the kernel reclaims first.
+function cgroupFiles(): { limitFile: string, usageFile: string, statFile: string, inactiveFileKey: string } {
   const override = process.env.PWMCP_CGROUP_DIR_FOR_TEST;
-  const v2 = (dir: string) => ({ limitFile: path.join(dir, 'memory.max'), usageFile: path.join(dir, 'memory.current') });
-  const v1 = (dir: string) => ({ limitFile: path.join(dir, 'memory.limit_in_bytes'), usageFile: path.join(dir, 'memory.usage_in_bytes') });
+  const v2 = (dir: string) => ({ limitFile: path.join(dir, 'memory.max'), usageFile: path.join(dir, 'memory.current'), statFile: path.join(dir, 'memory.stat'), inactiveFileKey: 'inactive_file' });
+  const v1 = (dir: string) => ({ limitFile: path.join(dir, 'memory.limit_in_bytes'), usageFile: path.join(dir, 'memory.usage_in_bytes'), statFile: path.join(dir, 'memory.stat'), inactiveFileKey: 'total_inactive_file' });
   if (override)
     return fs.existsSync(path.join(override, 'memory.max')) ? v2(override) : v1(override);
   if (fs.existsSync('/sys/fs/cgroup/memory.max'))
@@ -98,12 +99,22 @@ function readNumberFile(file: string): number | undefined {
 // where the cgroup limit equals the VM memory) falls back to /proc/meminfo. If that is unreadable too, usage is
 // undefined, so the memory high-water check is skipped but the count cap still has a limit.
 function readCgroupMemory(): { limit: number, usage: number | undefined } {
-  const { limitFile, usageFile } = cgroupFiles();
+  const { limitFile, usageFile, statFile, inactiveFileKey } = cgroupFiles();
   const total = os.totalmem();
   const limit = readNumberFile(limitFile);
   if (limit === undefined || limit <= 0 || limit >= total || limit >= kCgroupV1Unbounded)
     return readMeminfo() ?? { limit: total, usage: undefined };
-  return { limit, usage: readNumberFile(usageFile) };
+  const usage = readNumberFile(usageFile);
+  return { limit, usage: usage === undefined ? undefined : usage - readStat(statFile, inactiveFileKey) };
+}
+
+// A value from memory.stat, 0 when the file or the key is not there.
+function readStat(file: string, key: string): number {
+  try {
+    return Number(new RegExp(`^${key} (\\d+)$`, 'm').exec(fs.readFileSync(file, 'utf-8'))?.[1] ?? 0);
+  } catch {
+    return 0;
+  }
 }
 
 function readMeminfo(): { limit: number, usage: number } | undefined {
