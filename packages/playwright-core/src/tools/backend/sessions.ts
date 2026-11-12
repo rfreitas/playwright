@@ -55,8 +55,6 @@ const kPerWindowBytes = 250 * 1024 * 1024;
 // Fractions of the memory limit at which parking starts and stops evicting parked windows.
 const kMemoryHighWater = 0.85;
 const kMemoryLowWater = 0.75;
-// cgroup v1 reports this (~2^63) for "no limit".
-const kCgroupV1Unbounded = 9223372036854771712;
 
 // The most windows parked sessions may hold; 0 means no count limit. Set at server start.
 let graceMax = 0;
@@ -73,14 +71,11 @@ function adaptiveGraceMax(): number {
 
 // The usage file counts page cache; the stat key is the part of it that the kernel reclaims first.
 function cgroupFiles(): { limitFile: string, usageFile: string, statFile: string, inactiveFileKey: string } {
-  const override = process.env.PWMCP_CGROUP_DIR_FOR_TEST;
-  const v2 = (dir: string) => ({ limitFile: path.join(dir, 'memory.max'), usageFile: path.join(dir, 'memory.current'), statFile: path.join(dir, 'memory.stat'), inactiveFileKey: 'inactive_file' });
-  const v1 = (dir: string) => ({ limitFile: path.join(dir, 'memory.limit_in_bytes'), usageFile: path.join(dir, 'memory.usage_in_bytes'), statFile: path.join(dir, 'memory.stat'), inactiveFileKey: 'total_inactive_file' });
-  if (override)
-    return fs.existsSync(path.join(override, 'memory.max')) ? v2(override) : v1(override);
-  if (fs.existsSync('/sys/fs/cgroup/memory.max'))
-    return v2('/sys/fs/cgroup');
-  return v1('/sys/fs/cgroup/memory');
+  const root = process.env.PWMCP_CGROUP_DIR_FOR_TEST || '/sys/fs/cgroup';
+  if (fs.existsSync(path.join(root, 'memory.max')))
+    return { limitFile: path.join(root, 'memory.max'), usageFile: path.join(root, 'memory.current'), statFile: path.join(root, 'memory.stat'), inactiveFileKey: 'inactive_file' };
+  const v1 = path.join(root, 'memory');
+  return { limitFile: path.join(v1, 'memory.limit_in_bytes'), usageFile: path.join(v1, 'memory.usage_in_bytes'), statFile: path.join(v1, 'memory.stat'), inactiveFileKey: 'total_inactive_file' };
 }
 
 function readNumberFile(file: string): number | undefined {
@@ -96,13 +91,13 @@ function readNumberFile(file: string): number | undefined {
 }
 
 // The container memory limit and current usage. A host-sized or unbounded cgroup limit (as on a Firecracker VM,
-// where the cgroup limit equals the VM memory) falls back to /proc/meminfo. If that is unreadable too, usage is
+// where the cgroup limit equals the VM memory, or cgroup v1, which reports about 2^63 for no limit) falls back to /proc/meminfo. If that is unreadable too, usage is
 // undefined, so the memory high-water check is skipped but the count cap still has a limit.
 function readCgroupMemory(): { limit: number, usage: number | undefined } {
   const { limitFile, usageFile, statFile, inactiveFileKey } = cgroupFiles();
   const total = os.totalmem();
   const limit = readNumberFile(limitFile);
-  if (limit === undefined || limit <= 0 || limit >= total || limit >= kCgroupV1Unbounded)
+  if (limit === undefined || limit >= total)
     return readMeminfo() ?? { limit: total, usage: undefined };
   const usage = readNumberFile(usageFile);
   return { limit, usage: usage === undefined ? undefined : usage - readStat(statFile, inactiveFileKey) };
@@ -156,17 +151,14 @@ async function evictGraceSession(token: string): Promise<void> {
   await entry.close?.().catch(() => {});
 }
 
-// The grace entry soonest to expire, which is the oldest park; never the one just parked.
+// The oldest park; never the one just parked. Every park has the same grace, so the registry's insertion order
+// is the order of expiry.
 function oldestGraceToken(justParked: string): string | undefined {
-  let oldest: string | undefined;
-  let oldestAt = Infinity;
-  for (const [token, entry] of graceSessions) {
-    if (token !== justParked && entry.closeAt < oldestAt) {
-      oldestAt = entry.closeAt;
-      oldest = token;
-    }
+  for (const token of graceSessions.keys()) {
+    if (token !== justParked)
+      return token;
   }
-  return oldest;
+  return undefined;
 }
 
 // A parked window can close on its own (a crash, window.close(), a person); only the open ones hold memory.

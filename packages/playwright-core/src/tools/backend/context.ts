@@ -184,9 +184,7 @@ export class Context {
     }
   }
 
-  private _closeOwnTabs = async () => {
-    await Promise.all(this._tabs.map(tab => tab.page.close().catch(() => {})));
-  };
+  private _closeOwnTabs = () => closeTabs(this._tabs);
 
   async dispose() {
     process.off('unhandledRejection', this._onUnhandledRejection);
@@ -218,7 +216,7 @@ export class Context {
   private async _endSession(): Promise<boolean> {
     liveSessions.delete(this._session!.token);
     clearTimeout(this._recordTimer);
-    const tabs = this._sessionTabs();
+    const tabs = this._sharedTabs(false);
     if (!tabs.length) {
       // Nothing to come back to: no record, and the caller closes whatever blank tabs there are.
       await deleteRecord(this.sessionsDir(), this._session!.token);
@@ -228,17 +226,14 @@ export class Context {
     const grace = this.config.resumeGrace ?? 0;
     if (!grace || !this._defaultBrowserContext.browser()?.isConnected())
       return false;
-    await this._closeBlankTabs();
+    await closeTabs(this._sharedTabs(true));
     return parkSession(record, tabs.map(tab => tab.page), grace, this.options.closeBrowser);
   }
 
-  // What a session is about, and so what its record and its grace keep: the tabs in the shared context that show a page.
-  private _sessionTabs(): Tab[] {
-    return this._tabs.filter(tab => !tab.isolatedContext && tab.page.url() !== 'about:blank');
-  }
-
-  private async _closeBlankTabs() {
-    await Promise.all(this._tabs.filter(tab => !tab.isolatedContext && tab.page.url() === 'about:blank').map(tab => tab.page.close().catch(() => {})));
+  // The tabs in the shared context that are blank, or that show a page. A session is about the ones that show a
+  // page: its record and its grace keep those.
+  private _sharedTabs(blank: boolean): Tab[] {
+    return this._tabs.filter(tab => !tab.isolatedContext && (tab.page.url() === 'about:blank') === blank);
   }
 
   sessionToken(): string | undefined {
@@ -267,8 +262,11 @@ export class Context {
       throw new Error(`Session ${token} is in use`);
     const dir = this.sessionsDir();
     // A fresh connection has at most the blank tab its first tool call opened; it goes once the real tabs are back.
-    const blanks = this._tabs.filter(tab => !tab.isolatedContext && tab.page.url() === 'about:blank');
-    const closeBlanks = () => Promise.all(blanks.map(tab => tab.page.close().catch(() => {})));
+    const blanks = this._sharedTabs(true);
+    const showResumed = async (current: Tab | undefined) => {
+      this._setCurrentTab(current ?? this._tabs[this._tabs.length - 1]);
+      await closeTabs(blanks);
+    };
     const parked = takeSession(token);
     if (parked) {
       // The old connection goes, its windows stay.
@@ -293,8 +291,7 @@ export class Context {
         this._session = { token, startedAt: parked.record.startedAt };
         liveSessions.add(token);
         this._resumed = true;
-        this._setCurrentTab(current ?? this._tabs[this._tabs.length - 1]);
-        await closeBlanks();
+        await showResumed(current);
         return false;
       }
     }
@@ -308,10 +305,8 @@ export class Context {
       if (recorded.current)
         current = tab;
     }
-    if (record.tabs.length) {
-      this._setCurrentTab(current ?? this._tabs[this._tabs.length - 1]);
-      await closeBlanks();
-    }
+    if (record.tabs.length)
+      await showResumed(current);
     await deleteRecord(dir, token);
     this._resumed = true;
     return true;
@@ -330,7 +325,7 @@ export class Context {
 
   private async _writeRecord(endedAt?: string): Promise<SessionRecord> {
     this._recordTimer = undefined;
-    const tabs = this._sessionTabs();
+    const tabs = this._sharedTabs(false);
     // Other clients read records: the client chose its name and a page chose its URL, so keep the name plain text
     // and redact the URL. A redacted URL reopens without its one-time parameters, which should not be replayed anyway.
     const record: SessionRecord = {
@@ -772,6 +767,10 @@ export class Context {
       text = text.replace(this._redactUrlParamsRegex, '$1<redacted>');
     return text;
   }
+}
+
+async function closeTabs(tabs: Tab[]) {
+  await Promise.all(tabs.map(tab => tab.page.close().catch(() => {})));
 }
 
 function originOrHostGlob(originOrHost: string) {
