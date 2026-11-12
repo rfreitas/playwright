@@ -833,8 +833,8 @@ async function checkFile(options: ContextOptions, resolvedFilename: string, flag
   ]);
   if (!isPathInside(realOutput, realFilename) && !isPathInside(realWorkspace, realFilename))
     throw new Error(`File access denied: ${resolvedFilename} is outside allowed roots. Allowed roots: ${output}, ${workspace}`);
-  // Session records hold other clients' tokens and URLs, and other clients trust what they read there.
+  // Session records, written with private tabs only, hold other clients' tokens and URLs, and other clients trust what they read there.
   // A directory that holds them is refused too, since a folder upload sends its whole tree.
-  if (isPathInside(realSessions, realFilename) || isPathInside(realFilename, realSessions))
+  if (options.config.privateTabs && (isPathInside(realSessions, realFilename) || isPathInside(realFilename, realSessions)))
     throw new Error(`File access denied: ${resolvedFilename} is or holds the session records directory ${sessions}`);
 }

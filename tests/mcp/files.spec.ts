@@ -544,8 +544,13 @@ test('browser_drop files', async ({ client, server }, testInfo) => {
     arguments: { url: server.PREFIX },
   });
 
-  const filePath = testInfo.outputPath('drop-me.txt');
-  await fs.writeFile(filePath, 'hello');
+  // Without private tabs there are no session records, so sessions/ in the output directory is an ordinary folder.
+  const filePath = testInfo.outputPath('.playwright-mcp', 'sessions', 'drop-me.txt');
+  expect(await client.callTool({
+    name: 'browser_evaluate',
+    arguments: { function: '() => "hello"', filename: filePath },
+  })).not.toHaveResponse({ isError: true });
+  expect(await fs.readFile(filePath, 'utf-8')).toBe('"hello"');
 
   expect(await client.callTool({
     name: 'browser_drop',
@@ -562,7 +567,7 @@ test('browser_drop files', async ({ client, server }, testInfo) => {
     name: 'browser_evaluate',
     arguments: { function: '() => window.__dropInfo' },
   })).toHaveResponse({
-    result: expect.stringContaining(`"text": "hello"`),
+    result: expect.stringContaining(`"text": "\\"hello\\""`),
   });
 });
 
