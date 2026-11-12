@@ -181,6 +181,19 @@ test('records: a closed session reopens from its record, and resume refuses what
   expect(text(await e.client.callTool({ name: 'browser_drop', arguments: { element: 'button', target: 'e2', paths: [recordFile(newToken)] } }))).toContain('File access denied');
   await e.client.callTool({ name: 'browser_evaluate', arguments: { function: '() => 1', filename: path.join(outputDir, 'result.json') } });
   expect(fs.readFileSync(path.join(outputDir, 'result.json'), 'utf-8')).toBe('1');
+  // Nor can a folder upload of a directory that holds the records; a single file, or a folder without them, still uploads.
+  server.setContent('/upload', '<input id=dir type=file webkitdirectory><input id=file type=file>', 'text/html');
+  await e.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/upload' } });
+  await fs.promises.mkdir(path.join(outputDir, 'folder'), { recursive: true });
+  await fs.promises.writeFile(path.join(outputDir, 'folder', 'file.txt'), 'x');
+  const upload = async (target: string, paths: string[]) => {
+    await e.client.callTool({ name: 'browser_click', arguments: { element: 'file input', target } });
+    return text(await e.client.callTool({ name: 'browser_file_upload', arguments: { paths } }));
+  };
+  expect(await upload('#dir', [outputDir])).toContain('File access denied');
+  expect(await upload('#dir', [path.join(outputDir, 'folder')])).not.toContain('Error');
+  expect(await upload('#file', [path.join(outputDir, 'result.json')])).not.toContain('Error');
+  expect(text(await e.client.callTool({ name: 'browser_evaluate', arguments: { function: '() => [...document.querySelectorAll("input")].flatMap(i => [...i.files].map(f => f.name)).join()' } }))).toContain('file.txt,result.json');
 
   // The server restarts: its clients' tabs close with it, and the live session's record reopens on the next server.
   await new Promise(f => { first.process.once('exit', f); first.process.kill('SIGTERM'); });
