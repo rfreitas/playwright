@@ -143,6 +143,19 @@ test('records: a closed session reopens from its record, and resume refuses what
   const recordFile = (token: string) => path.join(outputDir, 'sessions', `${token}.json`);
   const readRecord = (token: string) => fs.promises.readFile(recordFile(token), 'utf-8').then(JSON.parse).catch(() => undefined);
 
+  // A download that a page names "sessions", before any record is written, cannot take the place of the records
+  // directory. Over CDP downloads are not saved, so this server launches its own browser.
+  server.setRoute('/sessions-download', (req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': 'attachment; filename=sessions' });
+    res.end('x');
+  });
+  const downloadOutputDir = test.info().outputPath('download-output');
+  const downloader = await startServer(['--private-tabs', `--output-dir=${downloadOutputDir}`, '--headless', '--browser=chrome']);
+  const dl = await connect(downloader.endpoint, 'client-dl');
+  await dl.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/sessions-download' } });
+  await expect.poll(() => fs.existsSync(path.join(downloadOutputDir, 'sessions'))).toBe(true);
+  expect(fs.statSync(path.join(downloadOutputDir, 'sessions')).isDirectory()).toBe(true);
+
   const a = await connect(endpoint, 'client-a');
   const token = tokenOf(await a.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/a' } }));
   await expect.poll(() => readRecord(token)).toBeTruthy();

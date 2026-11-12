@@ -14,13 +14,16 @@
  * limitations under the License.
  */
 
+import fs from 'fs';
+
 import { Option as ProgramOption } from 'commander';
 import * as mcpServer from '../utils/mcp/server';
 import { commaSeparatedList, defaultCodegenLanguage, dotenvFileLoader, enumParser, headerParser, numberParser, resolutionParser, resolveCLIConfigForMCP, semicolonSeparatedList } from './config';
 import { setupExitWatchdog } from './watchdog';
 import { connectToBrowserEndpoint, createBrowserWithInfo, createIdleTimer } from './browserFactory';
 import { BrowserBackend } from '../backend/browserBackend';
-import { configureGraceLimit } from '../backend/sessions';
+import { configureGraceLimit, sessionsDir } from '../backend/sessions';
+import { outputDir } from '../backend/context';
 import { filteredTools } from '../backend/tools';
 import { testDebug } from './log';
 import { packageJSON } from '../../package';
@@ -109,6 +112,9 @@ export function decorateMCPCommand(command: Command) {
         config.resumeGrace = config.server?.port === undefined ? 0 : config.resumeGrace ?? 30 * 60 * 1000;
         // The grace registry is process-wide, so its cap is set once here from the resolved config.
         configureGraceLimit(config.resumeGraceMax);
+        // Take the records directory's name before a download that a page names "sessions" can.
+        if (config.privateTabs)
+          await fs.promises.mkdir(sessionsDir(outputDir({ config, cwd: process.cwd() })), { recursive: true });
         const tools = filteredTools(config);
         const useSharedBrowser = config.sharedBrowserContext || config.browser.isolated;
         let sharedBrowserPromise: Promise<BrowserWithInfo> | undefined;
