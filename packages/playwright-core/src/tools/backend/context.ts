@@ -28,7 +28,7 @@ import { isPathInside, isSystemDirectory, isWritable, resolveSymlinks, sanitizeF
 import { playwright } from '../../inprocess';
 
 import { dedent, languageGeneratorId, secretCode } from './codegen';
-import { deleteRecord, graceSessions, liveSessions, parkSession, readRecord, sessionsDir, takeSession, writeRecord } from './sessions';
+import { deleteRecord, liveSessions, parkSession, readRecord, sessionsDir, takeSession, writeRecord } from './sessions';
 import { Tab } from './tab';
 
 import type { BrowserContextEx } from './browserContextEx';
@@ -116,7 +116,8 @@ export type TraceInfo = { name: string, isolatedContext?: string };
 // Actions are paced by this delay when the cursor is shown, giving it time to travel.
 const kCursorDuration = 800;
 
-const kResumeReminder = 'A session that disconnected recently is still open; browser_sessions lists it, browser_tabs resume takes it over.';
+// True for every new session, and says nothing about other clients' sessions.
+const kResumeHint = 'To get back the tabs of an earlier session of this conversation, call browser_tabs with action "resume" and that session\'s token, which is in its earlier responses.';
 
 export class Context {
   readonly config: ContextConfig;
@@ -147,7 +148,6 @@ export class Context {
   // Private tabs only: the session other clients can list and resume.
   private _session: { token: string, startedAt: string } | undefined;
   private _sessionAnnounced = false;
-  private _resumed = false;
   private _recordTimer: NodeJS.Timeout | undefined;
 
   private _webmcpToolsSignature = '';
@@ -240,15 +240,15 @@ export class Context {
     return this._session?.token;
   }
 
-  // The token goes out with the first response and with every tab listing; the reminder with the first response only.
+  // The token goes out with the first response and with every tab listing; the resume hint with the first response only.
   sessionLines(includeToken: boolean): string[] {
     if (!this._session)
       return [];
     const lines: string[] = [];
     if (includeToken || !this._sessionAnnounced)
       lines.push(this._session.token);
-    if (!this._sessionAnnounced && !this._resumed && graceSessions.size)
-      lines.push(kResumeReminder);
+    if (!this._sessionAnnounced)
+      lines.push(kResumeHint);
     this._sessionAnnounced = true;
     return lines;
   }
@@ -290,7 +290,6 @@ export class Context {
         await deleteRecord(dir, this._session.token);
         this._session = { token, startedAt: parked.record.startedAt };
         liveSessions.add(token);
-        this._resumed = true;
         await showResumed(current);
         return false;
       }
@@ -308,7 +307,6 @@ export class Context {
     if (record.tabs.length)
       await showResumed(current);
     await deleteRecord(dir, token);
-    this._resumed = true;
     return true;
   }
 
