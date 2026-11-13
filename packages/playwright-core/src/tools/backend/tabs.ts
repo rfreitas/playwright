@@ -17,7 +17,7 @@
 import * as z from 'zod';
 import { defineTool } from './tool';
 import { renderTabsMarkdown } from './response';
-import { graceSessions, liveSessions, readRecords } from './sessions';
+import { graceSessions, liveSessions, readRecord } from './sessions';
 
 const browserTabs = defineTool({
   capability: 'core-tabs',
@@ -81,24 +81,33 @@ export const browserSessions = defineTool({
 
   schema: {
     name: 'browser_sessions',
-    title: 'List sessions',
-    description: 'List the sessions of this server, newest first: live ones, ones in grace, whose client disconnected and whose tabs are still open, and closed ones, whose tabs are recorded. browser_tabs resume with a session\'s token takes over the tabs of one in grace and reopens the tabs of a closed one.',
-    inputSchema: z.object({}),
+    title: 'Show sessions',
+    description: 'Show the state and tabs of sessions whose tokens you hold: live, in grace (its client disconnected and its tabs are still open) or closed (its tabs are recorded). Without tokens, shows this session. browser_tabs resume with a session\'s token takes over the tabs of one in grace and reopens the tabs of a closed one.',
+    inputSchema: z.object({
+      tokens: z.array(z.string()).optional().describe('Tokens of the sessions to show, from their earlier responses. If omitted, this session is shown.'),
+    }),
     type: 'readOnly',
   },
 
   handle: async (context, params, response) => {
+    // A token is its session's secret: only the sessions the caller names are shown, and a token without
+    // a session reads the same whether it never existed or is gone.
+    const tokens = params.tokens?.length ? params.tokens : [context.sessionToken()].filter(token => token !== undefined);
     const lines: string[] = [];
-    for (const record of await readRecords(context.sessionsDir())) {
-      const grace = graceSessions.get(record.token);
-      const state = liveSessions.has(record.token) ? 'live' : grace ? `grace until ${new Date(grace.closeAt).toISOString()}` : `closed ${record.updatedAt}`;
-      lines.push(`- ${record.token} ${state} (${record.clientName})`);
-      for (const tab of record.tabs)
+    for (const token of tokens) {
+      const record = await readRecord(context.sessionsDir(), token);
+      const grace = graceSessions.get(token);
+      const state = liveSessions.has(token) ? 'live' : grace ? `grace until ${new Date(grace.closeAt).toISOString()}` : record ? `closed ${record.updatedAt}` : undefined;
+      if (!state) {
+        lines.push(`- ${token} unknown`);
+        continue;
+      }
+      lines.push(`- ${token} ${state}${record ? ` (${record.clientName})` : ''}`);
+      for (const tab of record?.tabs ?? [])
         lines.push(`  - ${tab.url}`);
     }
-    if (lines.length)
-      lines.push('browser_tabs resume with a token takes over the tabs of a session in grace, and reopens a closed session\'s tabs from its record.');
-    response.addTextResult(lines.length ? lines.join('\n') : 'No sessions');
+    lines.push('browser_tabs resume with a token takes over the tabs of a session in grace, and reopens a closed session\'s tabs from its record.');
+    response.addTextResult(lines.join('\n'));
   },
 });
 

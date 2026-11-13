@@ -239,13 +239,6 @@ export async function readRecord(dir: string, token: string): Promise<SessionRec
   return await fs.promises.readFile(recordFile(dir, token), 'utf-8').then(text => JSON.parse(text)).catch(() => undefined);
 }
 
-// Newest first.
-export async function readRecords(dir: string): Promise<SessionRecord[]> {
-  const names = await fs.promises.readdir(dir).catch(() => []);
-  const records = await Promise.all(names.filter(name => name.endsWith('.json')).map(name => readRecord(dir, name.slice(0, -'.json'.length))));
-  return records.filter((record): record is SessionRecord => !!record).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-}
-
 export async function deleteRecord(dir: string, token: string) {
   await fs.promises.unlink(recordFile(dir, token)).catch(() => {});
 }

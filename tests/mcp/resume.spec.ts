@@ -85,7 +85,7 @@ test('grace: a dropped session keeps its windows, and a later client takes them 
   await a.client.close();
   await expect.poll(async () => (await readRecord())?.endedAt).toEqual(expect.any(String));
   const watcher = await connect(endpoint, 'client-watcher');
-  await expect.poll(async () => text(await watcher.client.callTool({ name: 'browser_sessions', arguments: {} }))).toContain(`${token} grace until`);
+  await expect.poll(async () => text(await watcher.client.callTool({ name: 'browser_sessions', arguments: { tokens: [token] } }))).toContain(`${token} grace until`);
   expect(browserContext.pages().map(p => p.url())).toContain(server.PREFIX + '/a');
 
   // A new client hears about it once.
@@ -100,10 +100,20 @@ test('grace: a dropped session keeps its windows, and a later client takes them 
     clientName: cleanName,
     tabs: [expect.objectContaining({ url: server.PREFIX + '/b?code=<redacted>', title: 'Title chosen by the page' })],
   }));
+  // With no tokens the session list shows the caller's own session only.
   const sessions = text(await b.client.callTool({ name: 'browser_sessions', arguments: {} }));
-  expect(sessions).toContain(`${token} grace until`);
   expect(sessions).toContain(`${tokenOf(bResponse)} live (${cleanName})\n  - ${server.PREFIX}/b?code=<redacted>`);
   expect(sessions).not.toContain('Title chosen by the page');
+
+  // B never held A's token, so nothing it can call tells it A's token, URL or client name.
+  const madeUp = 'deadbeefdeadbeefdeadbeef';
+  const unknown = text(await b.client.callTool({ name: 'browser_sessions', arguments: { tokens: [madeUp] } }));
+  expect(unknown).toContain(`- ${madeUp} unknown`);
+  for (const response of [text(bResponse), sessions, unknown, text(await b.client.callTool({ name: 'browser_tabs', arguments: { action: 'list' } }))]) {
+    expect(response).not.toContain(token);
+    expect(response).not.toContain(server.PREFIX + '/a');
+    expect(response).not.toContain('client-a');
+  }
 
   // A client that only ever had a blank tab leaves nothing to come back to: no window is kept for it, and no record.
   const blank = await connect(endpoint, 'client-blank');
@@ -113,12 +123,15 @@ test('grace: a dropped session keeps its windows, and a later client takes them 
   await blank.transport.terminateSession();
   await blank.client.close();
   await expect.poll(blanks).toBe(blanksWith - 1);
-  expect(text(await b.client.callTool({ name: 'browser_sessions', arguments: {} }))).not.toContain(blankToken);
+  // A session that is gone without a record reads the same as a token that never existed.
+  expect(text(await b.client.callTool({ name: 'browser_sessions', arguments: { tokens: [blankToken] } }))).toContain(`- ${blankToken} unknown`);
 
   // C takes the session over: the same window, the same token. It looked at its own tabs first, as an agent does,
   // and the blank tab that gave it is gone once it has its real ones.
+  // C holds A's token, so it sees A's state and tabs.
   const c = await connect(endpoint, 'client-c');
   await c.client.callTool({ name: 'browser_tabs', arguments: { action: 'list' } });
+  expect(text(await c.client.callTool({ name: 'browser_sessions', arguments: { tokens: [token] } }))).toMatch(new RegExp(`- ${token} grace until \\S+ \\(client-a\\)\\n  - ${server.PREFIX}/a\\n`));
   expect(await c.client.callTool({ name: 'browser_tabs', arguments: { action: 'resume', token } })).toHaveResponse({
     result: `- 0: (current) [](${server.PREFIX}/a)`,
   });
@@ -168,7 +181,7 @@ test('records: a closed session reopens from its record, and resume refuses what
   const c = await connect(endpoint, 'client-c');
   // It looks at its own tabs first, as an agent does; the blank tab that gives it goes when the recorded ones are back.
   await c.client.callTool({ name: 'browser_tabs', arguments: { action: 'list' } });
-  const sessions = text(await c.client.callTool({ name: 'browser_sessions', arguments: {} }));
+  const sessions = text(await c.client.callTool({ name: 'browser_sessions', arguments: { tokens: [token] } }));
   expect(sessions).toContain(`${token} closed`);
   expect(sessions).toContain('reopens a closed session');
   expect(sessions).not.toContain(kReminder);
@@ -214,7 +227,7 @@ test('records: a closed session reopens from its record, and resume refuses what
   await expect.poll(() => browserContext.pages().map(p => p.url())).not.toContain(server.PREFIX + '/a');
   const { endpoint: restarted } = await startServer(args);
   const f = await connect(restarted, 'client-f');
-  expect(text(await f.client.callTool({ name: 'browser_sessions', arguments: {} }))).toContain(`${newToken} closed`);
+  expect(text(await f.client.callTool({ name: 'browser_sessions', arguments: { tokens: [newToken] } }))).toContain(`${newToken} closed`);
   const reopened = text(await f.client.callTool({ name: 'browser_tabs', arguments: { action: 'resume', token: newToken } }));
   const thirdToken = reopened.match(/Reopened from record; this session is ([0-9a-f]{24})/)![1];
   expect(thirdToken).not.toBe(newToken);
@@ -245,14 +258,14 @@ test('grace cap: an over-cap park evicts the oldest but keeps its record to reop
   const args = [`--cdp-endpoint=${cdpServer.endpoint}`, '--private-tabs', `--output-dir=${outputDir}`, '--resume-grace=60000', '--resume-grace-max=2'];
   const { endpoint } = await startServer(args, { PWMCP_CGROUP_DIR_FOR_TEST: cgroupDir });
   const c = await connect(endpoint, 'client-c');
-  const sessions = async () => text(await c.client.callTool({ name: 'browser_sessions', arguments: {} }));
+  const sessions = async (...tokens: string[]) => text(await c.client.callTool({ name: 'browser_sessions', arguments: { tokens } }));
 
   const a = await connect(endpoint, 'client-a');
   const tokenA = tokenOf(await a.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/a' } }));
   await expect.poll(() => readRecordAt(outputDir, tokenA)).toBeTruthy();
   await a.transport.terminateSession();
   await a.client.close();
-  await expect.poll(sessions).toContain(`${tokenA} grace until`);
+  await expect.poll(() => sessions(tokenA)).toContain(`${tokenA} grace until`);
 
   const b = await connect(endpoint, 'client-b');
   const tokenB = tokenOf(await b.client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/b' } }));
@@ -272,8 +285,8 @@ test('grace cap: an over-cap park evicts the oldest but keeps its record to reop
   await expect.poll(() => readRecordAt(outputDir, tokenD)).toBeTruthy();
   await d.transport.terminateSession();
   await d.client.close();
-  await expect.poll(sessions).toContain(`${tokenD} grace until`);
-  expect(await sessions()).toContain(`${tokenB} grace until`);
+  await expect.poll(() => sessions(tokenD)).toContain(`${tokenD} grace until`);
+  expect(await sessions(tokenB)).toContain(`${tokenB} grace until`);
   expect(browserContext.pages().map(p => p.url())).toEqual(expect.arrayContaining([server.PREFIX + '/b', server.PREFIX + '/d']));
 
   // W alone has more windows than the cap: it is not parked, so it costs B nothing, and its record stays.
@@ -287,7 +300,7 @@ test('grace cap: an over-cap park evicts the oldest but keeps its record to reop
   await expect.poll(() => browserContext.pages().map(p => p.url()).filter(u => u.startsWith(server.PREFIX + '/w'))).toEqual([]);
   expect(browserContext.pages().map(p => p.url())).toEqual(expect.arrayContaining([server.PREFIX + '/b', server.PREFIX + '/d']));
 
-  const list = await sessions();
+  const list = await sessions(tokenA, tokenB, tokenW, tokenD);
   expect(list).toContain(`${tokenA} closed`);
   expect(list).toContain(`${tokenB} grace until`);
   expect(list).toContain(`${tokenW} closed`);
@@ -316,7 +329,7 @@ test('grace cap: the default adapts to a small memory limit', async ({ cdpServer
     const args = [`--cdp-endpoint=${cdpServer.endpoint}`, '--private-tabs', `--output-dir=${outputDir}`, '--resume-grace=60000'];
     const { endpoint } = await startServer(args, env);
     const watcher = await connect(endpoint, 'client-watcher');
-    const sessions = async () => text(await watcher.client.callTool({ name: 'browser_sessions', arguments: {} }));
+    const sessions = async (...tokens: string[]) => text(await watcher.client.callTool({ name: 'browser_sessions', arguments: { tokens } }));
 
     const tokens: string[] = [];
     for (const n of ['one', 'two', 'three', 'four', 'five']) {
@@ -326,11 +339,11 @@ test('grace cap: the default adapts to a small memory limit', async ({ cdpServer
       await expect.poll(() => readRecordAt(outputDir, token)).toBeTruthy();
       await client.transport.terminateSession();
       await client.client.close();
-      await expect.poll(sessions).toContain(`${token} grace until`);
+      await expect.poll(() => sessions(token)).toContain(`${token} grace until`);
     }
 
     // Five parks over a cap of four: the oldest is evicted, its record kept.
-    const list = await sessions();
+    const list = await sessions(...tokens);
     expect(list).toContain(`${tokens[0]} closed`);
     for (const token of tokens.slice(1))
       expect(list).toContain(`${token} grace until`);
@@ -352,7 +365,7 @@ test('grace cap: memory pressure evicts even under the count cap, but page cache
   const args = [`--cdp-endpoint=${cdpServer.endpoint}`, '--private-tabs', `--output-dir=${outputDir}`, '--resume-grace=60000', '--resume-grace-max=40'];
   const { endpoint } = await startServer(args, { PWMCP_CGROUP_DIR_FOR_TEST: cgroupDir });
   const watcher = await connect(endpoint, 'client-watcher');
-  const sessions = async () => text(await watcher.client.callTool({ name: 'browser_sessions', arguments: {} }));
+  const sessions = async (...tokens: string[]) => text(await watcher.client.callTool({ name: 'browser_sessions', arguments: { tokens } }));
 
   const park = async (name: string, url: string) => {
     const client = await connect(endpoint, name);
@@ -360,19 +373,19 @@ test('grace cap: memory pressure evicts even under the count cap, but page cache
     await expect.poll(() => readRecordAt(outputDir, token)).toBeTruthy();
     await client.transport.terminateSession();
     await client.client.close();
-    await expect.poll(sessions).toContain(`${token} grace until`);
+    await expect.poll(() => sessions(token)).toContain(`${token} grace until`);
     return token;
   };
 
   // Without the page cache, memory is far under the high-water mark: B's park evicts nobody.
   const tokenA = await park('client-a', '/a');
   const tokenB = await park('client-b', '/b');
-  expect(await sessions()).toContain(`${tokenA} grace until`);
+  expect(await sessions(tokenA)).toContain(`${tokenA} grace until`);
 
   // Now the usage is real: parking C evicts the oldest park, A, though the count cap was not hit.
   await writeInactiveFile(0);
   const tokenC = await park('client-c', '/c');
-  const list = await sessions();
+  const list = await sessions(tokenA, tokenB, tokenC);
   expect(list).toContain(`${tokenA} closed`);
   expect(list).toContain(`${tokenB} grace until`);
   expect(list).toContain(`${tokenC} grace until`);
@@ -417,7 +430,7 @@ test('grace cap: meminfo pressure evicts when the cgroup has no usage, a window 
   await expect.poll(() => browserContext.pages().map(p => p.url()).filter(u => u.startsWith(server.PREFIX + '/a'))).toEqual([]);
   expect(browserContext.pages().map(p => p.url())).toEqual(expect.arrayContaining([server.PREFIX + '/b', server.PREFIX + '/c']));
   const d = await connect(endpoint, 'client-d');
-  const sessions = text(await d.client.callTool({ name: 'browser_sessions', arguments: {} }));
+  const sessions = text(await d.client.callTool({ name: 'browser_sessions', arguments: { tokens: [tokenA, tokenB, tokenC] } }));
   expect(sessions).toContain(`${tokenA} closed`);
   expect(sessions).toContain(`${tokenB} grace until`);
   expect(sessions).toContain(`${tokenC} grace until`);
