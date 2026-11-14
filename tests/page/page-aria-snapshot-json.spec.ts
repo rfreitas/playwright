@@ -72,6 +72,7 @@ it('AR-098 should snapshot link url and textbox value', async ({ page }) => {
     <input title="Pin" autocomplete="current-password" value="shown">
     <button>Show <input type="password" value="x"></button>
     <select title="Size"><option>S</option></select>
+    <label id="l">Code <input autocomplete="one-time-code" value="otp-SECRET-3"></label><button aria-labelledby="l"></button>
   `);
   expect(await page.ariaSnapshotJSON()).toEqual([
     { role: 'link', name: 'Link', url: 'https://example.com/' },
@@ -81,6 +82,9 @@ it('AR-098 should snapshot link url and textbox value', async ({ page }) => {
     { role: 'textbox', name: 'Pin', type: 'text' },
     { role: 'button', name: 'Show', children: ['Show', { role: 'textbox', type: 'password' }] },
     { role: 'combobox', name: 'Size', type: 'select-one', children: [{ role: 'option', name: 'S', selected: true }] },
+    { role: 'text', text: 'Code' },
+    { role: 'textbox', name: 'Code', type: 'text' },
+    { role: 'button', name: 'Code' },
   ]);
 });
 
