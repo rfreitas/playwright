@@ -261,7 +261,7 @@ The result is a list of nodes, each node being an object with the following prop
 * `text` Text content of the element when it is the only child, or the content of a static text fragment.
 * `children` Child nodes and text fragments.
 * Boolean and value properties for element state flags: `checked`, `disabled`, `expanded`, `active`, `invalid`, `level`, `pressed` and `selected`.
-* Additional element properties, for example `url` for links, `placeholder` for text boxes and `type` for `input`, `textarea` and `select` elements. The value of a password input is never included.
+* Additional element properties, for example `url` for links, `placeholder` for text boxes and `type` for `input`, `textarea` and `select` elements. The value is never included for an `input` of type `password`, nor for an `input` or `textarea` whose `autocomplete` attribute contains `current-password`, `new-password` or `one-time-code`.
 * `ref` Element reference for AI-optimized snapshots.
 * `cursor` Set to `"pointer"` for clickable elements in AI-optimized snapshots.
 * `box` Bounding box of the element when [`option: Locator.ariaSnapshotJSON.boxes`] is set.

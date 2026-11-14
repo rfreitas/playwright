@@ -305,8 +305,9 @@ function toAriaNode(element: Element, options: InternalOptions, nameSourceElemen
   if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
     // The control's type (text, password, date, textarea, select-one...), so a reader can draw it.
     result.props['type'] = element.type;
-    // A password's value is never part of a snapshot.
-    if (!(element instanceof HTMLSelectElement) && !['checkbox', 'radio', 'file', 'password'].includes(element.type))
+    // A password's value is never part of a snapshot: a password input's, nor that of a field whose autocomplete says it
+    // holds a password or a one-time code (a password shown as text, or masked by CSS).
+    if (!(element instanceof HTMLSelectElement) && !['checkbox', 'radio', 'file', 'password'].includes(element.type) && !/\b(current-password|new-password|one-time-code)\b/i.test(element.getAttribute('autocomplete') || ''))
       result.children = [element.value];
   }
 

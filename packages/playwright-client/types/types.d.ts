@@ -14671,7 +14671,9 @@ export interface Locator {
    * - Boolean and value properties for element state flags: `checked`, `disabled`, `expanded`, `active`, `invalid`,
    *   `level`, `pressed` and `selected`.
    * - Additional element properties, for example `url` for links, `placeholder` for text boxes and `type` for
-   *   `input`, `textarea` and `select` elements. The value of a password input is never included.
+   *   `input`, `textarea` and `select` elements. The value is never included for an `input` of type `password`, nor
+   *   for an `input` or `textarea` whose `autocomplete` attribute contains `current-password`, `new-password` or
+   *   `one-time-code`.
    * - `ref` Element reference for AI-optimized snapshots.
    * - `cursor` Set to `"pointer"` for clickable elements in AI-optimized snapshots.
    * - `box` Bounding box of the element when
