@@ -58,7 +58,7 @@ it('AR-097 should snapshot flags as properties', async ({ page }) => {
     <button disabled>Click</button>
   `);
   expect(await page.ariaSnapshotJSON()).toEqual([
-    { role: 'checkbox', name: 'Check', checked: true },
+    { role: 'checkbox', name: 'Check', checked: true, type: 'checkbox' },
     { role: 'button', name: 'Click', disabled: true },
   ]);
 });
@@ -67,10 +67,14 @@ it('AR-098 should snapshot link url and textbox value', async ({ page }) => {
   await page.setContent(`
     <a href="https://example.com/">Link</a>
     <input title="Input" value="hello">
+    <input type="password" title="Password" value="secret">
+    <textarea title="Note">a</textarea>
   `);
   expect(await page.ariaSnapshotJSON()).toEqual([
     { role: 'link', name: 'Link', url: 'https://example.com/' },
-    { role: 'textbox', name: 'Input', text: 'hello' },
+    { role: 'textbox', name: 'Input', type: 'text', text: 'hello' },
+    { role: 'textbox', name: 'Password', type: 'password' },
+    { role: 'textbox', name: 'Note', type: 'textarea', text: 'a' },
   ]);
 });
 

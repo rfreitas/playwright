@@ -72,6 +72,7 @@ export type AriaNodeJSON = {
   box?: { x: number, y: number, width: number, height: number };
   url?: string;
   placeholder?: string;
+  type?: string;
   text?: string;
   children?: (AriaNodeJSON | string)[];
 };

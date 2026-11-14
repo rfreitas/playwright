@@ -820,6 +820,11 @@ function getTextAlternativeInternal(element: Element, options: AccessibleNameOpt
     const isOwnLabel = [...(element as (HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement)).labels || []].includes(element as any);
     const isOwnLabelledBy = (labelledBy || []).includes(element);
     if (!isOwnLabel && !isOwnLabelledBy) {
+      // A password's value is never part of a name, whatever the field's role.
+      if (tagName === 'INPUT' && (element as HTMLInputElement).type === 'password') {
+        options.visitedElements.add(element);
+        return emptyCompositeString();
+      }
       // Searchbox is a subclass of textbox, so it is handled the same way.
       if (role === 'textbox' || role === 'searchbox') {
         options.visitedElements.add(element);

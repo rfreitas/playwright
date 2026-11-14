@@ -302,8 +302,11 @@ function toAriaNode(element: Element, options: InternalOptions, nameSourceElemen
   if (roleUtils.kAriaSelectedRoles.includes(role))
     result.selected = roleUtils.getAriaSelected(element);
 
-  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-    if (element.type !== 'checkbox' && element.type !== 'radio' && element.type !== 'file')
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+    // The control's type (text, password, date, textarea, select-one...), so a reader can draw it.
+    result.props['type'] = element.type;
+    // A password's value is never part of a snapshot.
+    if (!(element instanceof HTMLSelectElement) && !['checkbox', 'radio', 'file', 'password'].includes(element.type))
       result.children = [element.value];
   }
 
@@ -509,6 +512,8 @@ export function renderAriaTreeAsJSON(ariaSnapshot: AriaSnapshot, publicOptions: 
       node.url = ariaNode.props.url;
     if (ariaNode.props.placeholder !== undefined)
       node.placeholder = ariaNode.props.placeholder;
+    if (ariaNode.props.type !== undefined)
+      node.type = ariaNode.props.type;
     if (ariaNode.props['aria-hidden'] !== undefined)
       node.ariaHidden = true;
 
