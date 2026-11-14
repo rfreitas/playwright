@@ -124,6 +124,7 @@ test('browser_fill_form', async ({ startClient, server }) => {
             Password
           </label>
         </form>
+        <span id="pin">PIN <input type="password" value="hunter2"></span><button aria-labelledby="pin"></button>
       </body>
     </html>
   `, 'text/html');
@@ -156,12 +157,15 @@ test('browser_fill_form', async ({ startClient, server }) => {
 await page.getByRole('textbox', { name: 'Password' }).fill(process.env['X-PASSWORD']);`,
   });
 
-  expect(await client.callTool({
+  // a password's value is not in the snapshot, neither as the field's value nor in another element's name
+  const snapshot = await client.callTool({
     name: 'browser_snapshot',
     arguments: {},
-  })).toHaveResponse({
-    inlineSnapshot: expect.stringContaining(`- textbox \"Password\" [active] [ref=e6]: <secret>X-PASSWORD</secret>`),
   });
+  expect(snapshot).toHaveResponse({
+    inlineSnapshot: expect.stringMatching(/- textbox "Password" \[active\] \[ref=e6\]$/m),
+  });
+  expect(JSON.stringify(snapshot)).not.toMatch(/X-PASSWORD|hunter2/);
 });
 
 test('empty secret value is ignored', async ({ startClient, server }) => {
