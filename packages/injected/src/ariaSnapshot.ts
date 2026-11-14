@@ -105,10 +105,10 @@ export function generateAriaTree(rootElement: Element, publicOptions: AriaTreeOp
       if (roleUtils.isTextNodeNotRendered(node as Text))
         return;
 
-      const text = node.nodeValue;
-      // <textarea>AAA</textarea> should not report AAA as a child of the textarea.
-      if (ariaNode.role !== 'textbox' && text)
-        ariaNode.children.push(node.nodeValue || '');
+      // A textbox's text is not a child. A textarea's text is its initial value, never a child, whatever its role:
+      // the value rule decides whether it is shown.
+      if (ariaNode.role !== 'textbox' && node.parentElement?.nodeName !== 'TEXTAREA')
+        ariaNode.children.push(node.nodeValue);
       return;
     }
 
