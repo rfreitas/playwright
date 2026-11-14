@@ -763,6 +763,13 @@ function insideTargetElement(options: AccessibleNameOptions) {
   return options.embeddedInTargetElement === 'self' || options.embeddedInTargetElement === 'descendant';
 }
 
+// True for a field that holds a password or a one-time code: a password input, or a field whose autocomplete says so
+// (a password shown as text, or masked by CSS). Its value is never part of a snapshot or a name.
+export function isSecretField(element: Element): boolean {
+  return (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) &&
+    (element.type === 'password' || /\b(current-password|new-password|one-time-code)\b/i.test(element.getAttribute('autocomplete') || ''));
+}
+
 function getTextAlternativeInternal(element: Element, options: AccessibleNameOptions): CompositeString {
   if (options.visitedElements.has(element))
     return emptyCompositeString();
@@ -821,7 +828,7 @@ function getTextAlternativeInternal(element: Element, options: AccessibleNameOpt
     const isOwnLabelledBy = (labelledBy || []).includes(element);
     if (!isOwnLabel && !isOwnLabelledBy) {
       // A password's value is never part of a name, whatever the field's role.
-      if (tagName === 'INPUT' && (element as HTMLInputElement).type === 'password') {
+      if (isSecretField(element)) {
         options.visitedElements.add(element);
         return emptyCompositeString();
       }
