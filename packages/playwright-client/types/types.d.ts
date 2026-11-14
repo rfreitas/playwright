@@ -14670,7 +14670,8 @@ export interface Locator {
    * - `children` Child nodes and text fragments.
    * - Boolean and value properties for element state flags: `checked`, `disabled`, `expanded`, `active`, `invalid`,
    *   `level`, `pressed` and `selected`.
-   * - Additional element properties, for example `url` for links and `placeholder` for text boxes.
+   * - Additional element properties, for example `url` for links, `placeholder` for text boxes and `type` for
+   *   `input`, `textarea` and `select` elements. The value of a password input is never included.
    * - `ref` Element reference for AI-optimized snapshots.
    * - `cursor` Set to `"pointer"` for clickable elements in AI-optimized snapshots.
    * - `box` Bounding box of the element when
