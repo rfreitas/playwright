@@ -72,7 +72,10 @@ it('AR-098 should snapshot link url and textbox value', async ({ page }) => {
     <input title="Pin" autocomplete="current-password" value="shown">
     <button>Show <input type="password" value="x"></button>
     <select title="Size"><option>S</option></select>
-    <label id="l">Code <input autocomplete="one-time-code" value="otp-SECRET-3"></label><button aria-labelledby="l"></button>
+    <label id="l">Code <textarea autocomplete="section-x one-time-code">otp-SECRET-3</textarea></label><button aria-labelledby="l"></button>
+    <textarea role="button" title="B" autocomplete="one-time-code">otp-SECRET-4</textarea>
+    <textarea role="combobox" title="C" autocomplete="one-time-code">otp-SECRET-5</textarea>
+    <div role="textbox" title="Edit" contenteditable>typed</div>
   `);
   expect(await page.ariaSnapshotJSON()).toEqual([
     { role: 'link', name: 'Link', url: 'https://example.com/' },
@@ -83,8 +86,11 @@ it('AR-098 should snapshot link url and textbox value', async ({ page }) => {
     { role: 'button', name: 'Show', children: ['Show', { role: 'textbox', type: 'password' }] },
     { role: 'combobox', name: 'Size', type: 'select-one', children: [{ role: 'option', name: 'S', selected: true }] },
     { role: 'text', text: 'Code' },
-    { role: 'textbox', name: 'Code', type: 'text' },
+    { role: 'textbox', name: 'Code', type: 'textarea' },
     { role: 'button', name: 'Code' },
+    { role: 'button', name: 'B', type: 'textarea' },
+    { role: 'combobox', name: 'C', type: 'textarea' },
+    { role: 'textbox', name: 'Edit' },
   ]);
 });
 
